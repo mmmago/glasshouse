@@ -678,6 +678,16 @@ app in front. Remote Keys puts its own filter first.
   launches `com.webos.app.home` from the filter; 123 stays in the compositor
   (`NL_SCREEN_REMOTE_APP_USE`); Alexa is launched by
   `amazon.alexa.adapter.plugin`.
+- **The AI button goes to the voice assistant alone.** `voiceconductor` reads
+  no value for it: its `voiceframework` settings name none, and
+  `keyaction.voice` did not change it. Raw events are not readable: a reader
+  on every `/dev/input/event*` that opened saw none of the MR25GA's presses, as
+  `lginput2` holds them. `mrcu/getButtonHistory` lists presses but sends no
+  updates to a subscriber, and `voiceconductor/getVoiceUiEvents` answers
+  `subscribed: false`. With `voiceconductor.service` stopped, presses were
+  still logged as `NL_BUTTON_CLICK` and nothing started the service again; an
+  app launched from that log line was in front 0.6 to 1 s after the press,
+  with nothing of LG's on screen, before and after a switch off and on.
 - **`mapping_info` is written back at each switch off and on.** At Active
   Standby, 60 ms after `NL_POWER_STATE`, and twice more on power-on, the
   settings service's subscribers got LG's entries again, from the copy kept

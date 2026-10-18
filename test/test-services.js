@@ -47,6 +47,16 @@ console.log('Running test-services.js ...');
   });
 })();
 
+// 2b. The voice assistant is Remote keys' to switch, not the list's
+(function testHiddenService() {
+  var item = services.CATALOG.filter(function (x) { return x.id === 'voiceconductor'; })[0];
+  assert.ok(item && item.hidden);
+  services.toggleService('voiceconductor', true, function (res) {
+    assert.strictEqual(res.ok, false);
+    console.log('  ✓ toggleService leaves the hidden voice assistant to Remote keys');
+  });
+})();
+
 // 3. getServices returns supported flag and array
 (function testGetServicesResponse() {
   services.getServices(function (res) {

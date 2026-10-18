@@ -71,6 +71,8 @@
  */
 var fs = require('fs');
 var path = require('path');
+var childProcess = require('child_process');
+var children = require('./children');
 var msg = require('./say').msg;
 
 var CONFIG_KEY = 'com.webos.surfacemanager.keyFilters';
@@ -96,6 +98,18 @@ var KEY_ACTION_PREFIX = 'com.webos.keyaction.';
 var NATIVE_ACTIONS = { guide: 'tvGuide', homehub: 'inputHub' };
 // Keys whose action is one of the settings service's, by the setting's name.
 var NATIVE_SETTINGS = { multikey: 'customShortPress', multikeyhold: 'customLongPress' };
+/*
+ * Keys LG's own service answers, by that service's id in lib/services.js. The
+ * MR25's AI button goes from lginput2 straight to voiceconductor, which reads
+ * no value for it (a C5, webOS 11.2.0). Set here, the service is switched off,
+ * so nothing of LG's opens, and the press is answered from the system log,
+ * where lginput2 logs every press as NL_BUTTON_CLICK. With the service
+ * running, its voice screen and terms opened over the app; with it off, the
+ * app opened 0.7 s after the press and nothing else did.
+ */
+var NATIVE_SERVICE_KEYS = { ai: 'voiceconductor' };
+var AI_PRESS = /NL_BUTTON_CLICK\b.*"button_type"\s*:\s*"KEY_VOICE"/;
+var MESSAGES_LOG = '/var/log/messages';
 var OTHER_CATEGORY = 'other';
 var MAPPING_KEY = 'mapping_info';
 
@@ -131,6 +145,8 @@ var KEYS = [
   // unchanged. Home Hub is the MR25's house-in-a-circle button (IR 1031); the
   // ? button (IR 1132) is LG's custom button, with an action of its own when held.
   { key: 'homehub', title: 'Home Hub', nativeOnly: true },
+  // The MR25's AI button reads no value: see NATIVE_SERVICE_KEYS.
+  { key: 'ai', title: 'AI', nativeOnly: true, turnsOffVoice: true },
   { key: 'multikey', title: '? button', nativeOnly: true, noNothing: true },
   { key: 'multikeyhold', title: '? button, held', nativeOnly: true, noNothing: true },
   { key: 'guide', symbol: 'WebOS.Key_webOS_TVGuide', title: 'Guide' },
@@ -152,6 +168,10 @@ var filtersDir = LG_FILTERS_DIR;
 var tvKeys = null;      // the symbols this TV's filters name, read once
 var nativeFilters = null; // whether configd names native filters, once answered
 var SubscriptionCtor = null; // luna.Subscription, to follow LG's settings
+/** @type {typeof import('./services') | null} */
+var servicesModule = null;  // to switch LG's voice assistant off and on
+var spawnFn = childProcess.spawn;
+var messagesPath = MESSAGES_LOG;
 var reapplyDelayMs = 1000;
 
 function init(opts) {
@@ -165,6 +185,10 @@ function init(opts) {
   watchLg(false);
   reapplied = [];
   SubscriptionCtor = opts.subscription || null;
+  followAi(undefined);
+  servicesModule = opts.services || null;
+  spawnFn = opts.spawn || childProcess.spawn;
+  messagesPath = opts.messagesPath || MESSAGES_LOG;
   if (typeof opts.reapplyDelayMs === 'number') reapplyDelayMs = opts.reapplyDelayMs;
   powerTimers.forEach(function (t) { clearTimeout(t); });
   powerTimers = [];
@@ -465,7 +489,8 @@ function hasNativeFilters(cb) {
 // LG's values as they were before Glasshouse changed them, and what it last
 // wrote over each, by kind: mapping (the streaming buttons), actions (configd
 // key actions) and settings (the ? button), each beside its ...Written.
-var LG_KINDS = ['mapping', 'actions', 'settings'];
+// services holds each of LG's services Glasshouse has switched off, as true.
+var LG_KINDS = ['mapping', 'actions', 'settings', 'services'];
 
 function readLg() {
   var out = {};
@@ -574,6 +599,7 @@ function nativeKeys(tv, lg) {
   return KEYS.filter(function (k) {
     if (NATIVE_ACTIONS[k.key]) return !!(tv.actions && tv.actions[NATIVE_ACTIONS[k.key]]);
     if (NATIVE_SETTINGS[k.key]) return !!(tv.settings && tv.settings[NATIVE_SETTINGS[k.key]]);
+    if (NATIVE_SERVICE_KEYS[k.key]) return !!(servicesModule && servicesModule.available(NATIVE_SERVICE_KEYS[k.key]));
     if (k.nativeOnly) return false;
     var entry = lg.mapping[k.key] || mappingEntry(tv.list, k.key);
     return !!(entry && typeof entry === 'object' && entry.isActive !== false);
@@ -653,6 +679,7 @@ function applyNativeNow(cb, mapOverride) {
   var lg = readLg();
   if (!Object.keys(map).length && !lgHolds(lg)) {
     watchLg(false);
+    followAi(undefined);
     return cb(true, false);
   }
   readNative(function (tv) {
@@ -688,14 +715,17 @@ function applyNativeNow(cb, mapOverride) {
     var wrote = Object.keys(settings).length > 0 || Object.keys(configs).length > 0;
     var finish = function (ok) {
       if (!ok) return cb(false, wrote);
-      try {
-        writeLg(lg);
-      } catch (e) {
-        console.log('remotekeys: could not write ' + lgFile() + ': ' + e.message);
-        return cb(false, wrote);
-      }
-      watchLg(lgHolds(lg, ['mapping', 'settings']));
-      cb(true, wrote);
+      switchServices(map, lg, function (okServices, switched) {
+        try {
+          writeLg(lg);
+        } catch (e) {
+          console.log('remotekeys: could not write ' + lgFile() + ': ' + e.message);
+          return cb(false, wrote || switched);
+        }
+        watchLg(lgHolds(lg, ['mapping', 'settings']));
+        followAi(Object.prototype.hasOwnProperty.call(map, 'ai') && lg.services.voiceconductor ? map.ai : undefined);
+        cb(okServices, wrote || switched);
+      });
     };
     var writeActions = function () {
       if (!Object.keys(configs).length) return finish(true);
@@ -706,6 +736,109 @@ function applyNativeNow(cb, mapOverride) {
       if (!ok) return cb(false, wrote);
       writeActions();
     });
+  });
+}
+
+/*
+ * Switches off each of LG's services a set key needs off, and back on each
+ * one Glasshouse switched off that no set key needs now. lg.services records
+ * which, so one the owner had off is never switched on. cb(ok, switched).
+ */
+function switchServices(map, lg, cb) {
+  var todo = [];
+  Object.keys(NATIVE_SERVICE_KEYS).forEach(function (key) {
+    var id = NATIVE_SERVICE_KEYS[key];
+    var wanted = Object.prototype.hasOwnProperty.call(map, key);
+    if (wanted && !lg.services[id]) todo.push({ id: id, off: true });
+    else if (!wanted && lg.services[id]) todo.push({ id: id, off: false });
+    else if (wanted && servicesModule && !servicesModule.isDisabled(id)) todo.push({ id: id, off: true });
+  });
+  if (!todo.length) return cb(true, false);
+  if (!servicesModule) return cb(false, false);
+  var ok = true;
+  (function next(i) {
+    if (i === todo.length) return cb(ok, true);
+    var job = todo[i];
+    servicesModule.switchHidden(job.id, job.off, function (r) {
+      if (r && r.ok) {
+        if (job.off) lg.services[job.id] = true;
+        else delete lg.services[job.id];
+        console.log('remotekeys: ' + job.id + ' switched ' + (job.off ? 'off' : 'back on'));
+      } else {
+        ok = false;
+      }
+      next(i + 1);
+    });
+  })(0);
+}
+
+/*
+ * The AI button's press, answered from the system log while it is set: the id
+ * it opens, '' for nothing, undefined while it is LG's and nothing follows the
+ * log. busybox tail -F carries on across the log's rotation.
+ */
+var aiTarget;
+var aiFollower = null;
+var aiFollowerRetry = null;
+var lastAiPress = 0;
+var AI_DEBOUNCE_MS = 500;
+
+function followAi(target) {
+  aiTarget = target;
+  if (target !== undefined) {
+    if (!aiFollower && !aiFollowerRetry) startAiFollower();
+    return;
+  }
+  if (aiFollowerRetry) { clearTimeout(aiFollowerRetry); aiFollowerRetry = null; }
+  if (aiFollower) {
+    var child = aiFollower;
+    aiFollower = null;
+    try { child.kill(); } catch (e) {}
+  }
+}
+
+function startAiFollower() {
+  children.launch(function () {
+    if (aiTarget === undefined || aiFollower) return;
+    var child;
+    try {
+      child = spawnFn('tail', ['-F', '-n', '0', messagesPath]);
+    } catch (e) {
+      console.log('remotekeys: could not follow ' + messagesPath + ': ' + e.message);
+      return retryAiFollower();
+    }
+    aiFollower = child;
+    var buffered = '';
+    child.stdout.on('data', function (chunk) {
+      buffered += String(chunk);
+      var lines = buffered.split('\n');
+      buffered = lines.pop();
+      lines.forEach(function (line) { if (AI_PRESS.test(line)) aiPressed(); });
+    });
+    child.on('error', function () {});
+    child.on('close', function () {
+      if (aiFollower !== child) return;
+      aiFollower = null;
+      retryAiFollower();
+    });
+  });
+}
+
+function retryAiFollower() {
+  if (aiTarget === undefined || aiFollowerRetry) return;
+  aiFollowerRetry = setTimeout(function () {
+    aiFollowerRetry = null;
+    if (aiTarget !== undefined) startAiFollower();
+  }, 5000);
+}
+
+function aiPressed() {
+  var now = Date.now();
+  if (now >= lastAiPress && now - lastAiPress < AI_DEBOUNCE_MS) return;
+  lastAiPress = now;
+  if (!aiTarget || !lunaFn) return;
+  lunaFn('com.webos.applicationManager/launch', { id: aiTarget }, function (r) {
+    if (!(r && r.returnValue)) console.log('remotekeys: the AI button could not open ' + aiTarget);
   });
 }
 
@@ -831,6 +964,7 @@ function describeKeys(keys, inChain, cb) {
         elsewhere: !!(cc && k.regions && k.regions.indexOf(cc) === -1)
       };
       if (k.noNothing) key.noNothing = true;
+      if (k.turnsOffVoice) key.turnsOffVoice = true;
       return key;
     });
     cb({
@@ -1036,7 +1170,9 @@ module.exports = {
 // tvwebctl restore-keys: no server running, so luna is found here.
 if (require.main === module && process.argv[2] === '--restore') {
   var lunaLib = require('./luna');
-  init({ luna: lunaLib.call || lunaLib, stateDir: path.join(__dirname, '..') });
+  var servicesLib = require('./services');
+  servicesLib.init({ stateDir: path.join(__dirname, '..') });
+  init({ luna: lunaLib.call || lunaLib, services: servicesLib, stateDir: path.join(__dirname, '..') });
   restore(function (ok) {
     console.log(ok ? 'remotekeys: keys as LG has them' : 'remotekeys: could not reach configd; the map file is deleted');
     process.exit(ok ? 0 : 1);

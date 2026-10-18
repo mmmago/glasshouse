@@ -863,6 +863,10 @@
   "text": "Botones de streaming",
   "from": "Streaming buttons"
  },
+ "apps.remoteKeys.turnsOffVoice": {
+  "text": "Configurar esta tecla desactiva el asistente de voz de LG, así que la búsqueda por voz, el asistente de IA y el micrófono dejan de funcionar hasta que vuelva a estar como LG la tiene.",
+  "from": "Setting this key switches off LG's voice assistant, so voice search, the AI assistant and the microphone stop working until it is As LG has it again."
+ },
  "apps.restore.dismiss": {
   "text": "Descartar",
   "from": "Dismiss"
@@ -4922,6 +4926,14 @@
  "srv.service.uploadd.desc": {
   "text": "Sube registros de fallos, trazas de diagnóstico y telemetría de uso a los servidores de LG.",
   "from": "Uploads crash logs, diagnostic traces, and usage telemetry to LG servers."
+ },
+ "srv.service.voiceconductor": {
+  "text": "Asistente de voz de LG",
+  "from": "LG Voice Assistant"
+ },
+ "srv.service.voiceconductor.desc": {
+  "text": "El asistente de voz de LG: el botón de IA, la búsqueda por voz y el micrófono.",
+  "from": "LG's voice assistant: the AI button, voice search and the microphone."
  },
  "srv.tvRefused": {
   "text": "la TV no lo cambió",

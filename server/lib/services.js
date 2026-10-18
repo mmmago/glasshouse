@@ -78,6 +78,22 @@ var CATALOG = [
     upstart: 'remotelogger',
     badge: msg('srv.service.badge.ram', '{mb} MB RAM', { mb: '1.7' }),
     desc: msg('srv.service.remotelogger.desc', 'Ships system log messages to remote servers.')
+  },
+  /*
+   * LG's voice assistant: the AI button, voice search and the microphone. Not
+   * listed with the others: Remote keys switches it off while the AI button is
+   * set, as with it running LG's voice screen opens over the app chosen (a C5,
+   * webOS 11.2.0), and back on once the button is LG's again.
+   */
+  {
+    id: 'voiceconductor',
+    bin: 'voiceconductor',
+    title: msg('srv.service.voiceconductor', 'LG Voice Assistant'),
+    unit: 'voiceconductor.service',
+    upstart: null,
+    badge: '',
+    desc: msg('srv.service.voiceconductor.desc', 'LG\'s voice assistant: the AI button, voice search and the microphone.'),
+    hidden: true
   }
 ];
 
@@ -315,7 +331,7 @@ function getServices(cb) {
 
   for (var i = 0; i < CATALOG.length; i++) {
     var item = CATALOG[i];
-    if (serviceExists(item, systemctl, initctl)) {
+    if (!item.hidden && serviceExists(item, systemctl, initctl)) {
       available.push({
         id: item.id,
         title: item.title,
@@ -374,11 +390,20 @@ function getServices(cb) {
 }
 
 function toggleService(id, disabled, cb) {
+  switchService(id, disabled, cb, false);
+}
+
+// For the module that owns a hidden entry: Remote keys and the voice assistant.
+function switchHidden(id, disabled, cb) {
+  switchService(id, disabled, cb, true);
+}
+
+function switchService(id, disabled, cb, hiddenToo) {
   var catItem = null;
   for (var i = 0; i < CATALOG.length; i++) {
     if (CATALOG[i].id === id) { catItem = CATALOG[i]; break; }
   }
-  if (!catItem) {
+  if (!catItem || (catItem.hidden && !hiddenToo)) {
     return cb({ ok: false, error: 'Unknown service ID: ' + id });
   }
 
@@ -448,6 +473,7 @@ module.exports = {
   CATALOG: CATALOG,
   getServices: getServices,
   toggleService: toggleService,
+  switchHidden: switchHidden,
   isDisabled: isDisabled,
   available: available,
   startEnforcing: startEnforcing
