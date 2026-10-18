@@ -508,7 +508,9 @@ function renderRemoteKeys(d) {
   const away = rk.keys.filter(k => k.elsewhere && k.action === 'lg');
   const placed = new Set(away.map(k => k.key));
   const groups = RK_GROUPS.map(g => {
-    const keys = rk.keys.filter(k => !placed.has(k.key) && (!g.keys || g.keys.includes(k.key)));
+    // In the group's own order, as the remote has them.
+    const inGroup = g.keys ? g.keys.map(name => rk.keys.find(k => k.key === name)).filter(Boolean) : rk.keys;
+    const keys = inGroup.filter(k => !placed.has(k.key));
     keys.forEach(k => placed.add(k.key));
     if (!keys.length) return '';
     return `<div class="rk-grp">${esc(g.title())}</div>
