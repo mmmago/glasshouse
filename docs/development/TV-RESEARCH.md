@@ -665,7 +665,10 @@ app in front. Remote Keys puts its own filter first.
   Standby, 60 ms after `NL_POWER_STATE`, and twice more on power-on, the
   settings service's subscribers got LG's entries again, from the copy kept
   for the microcontroller (`com.webos.service.lowlevelstorage`, dbid `micom`).
-  configd's key actions and the custom button kept their values.
+  configd's key actions and the custom button kept their values. Not every
+  write is announced: around another switch off and on the list was written
+  back nine times, five of them with no message to the subscriber, the last
+  60 s after power-on.
 
 ## Promoted stub apps (G3, webOS 9.2.2)
 

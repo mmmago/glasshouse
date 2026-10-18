@@ -648,8 +648,11 @@ streaming buttons pressed while the TV is off. While a streaming button or the
 ? button is changed, the server subscribes to `mapping_info` and sets its
 values again a second after any change; more than twelve such writes in a
 minute are left to the next check, so it never takes turns with LG without
-end. It also checks at its start and every 30 minutes, writing nothing while
-all is in place. The microcontroller's copy is not changed, so a streaming
+end. Not every write is announced: around one switch off and on LG wrote nine
+times, five of them unannounced, the last a minute after the TV came on. So
+each change of power state is also followed by checks 3 s, 15 s, 1, 3 and 10
+minutes after it, and the server checks at its start and every 30 minutes,
+writing nothing while all is in place. The microcontroller's copy is not changed, so a streaming
 button pressed to switch the TV on opens LG's app.
 `tvwebctl restore-keys` writes LG's values back and deletes both files. The
 other keys Glasshouse offers elsewhere (Input, the color keys, Search, Info) are

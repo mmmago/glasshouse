@@ -166,6 +166,9 @@ function init(opts) {
   reapplied = [];
   SubscriptionCtor = opts.subscription || null;
   if (typeof opts.reapplyDelayMs === 'number') reapplyDelayMs = opts.reapplyDelayMs;
+  powerTimers.forEach(function (t) { clearTimeout(t); });
+  powerTimers = [];
+  powerRechecksMs = opts.powerRechecksMs || POWER_RECHECKS_MS;
 }
 
 // The TV's country as privacy.js learns it, or '' before it has.
@@ -923,6 +926,28 @@ function ensure(cb) {
 }
 
 /*
+ * LG writes its list back as the TV goes into standby and as it comes back
+ * on, and not every write reaches a subscriber: around one switch off and on
+ * of a C5 (11.2.0) it wrote nine times, five of them unannounced, the last a
+ * minute after the TV came on. So each change of power state is followed by
+ * checks from a few seconds to ten minutes after it, beside the subscription.
+ */
+var POWER_RECHECKS_MS = [3000, 15000, 60000, 180000, 600000];
+var powerRechecksMs = POWER_RECHECKS_MS;
+var powerTimers = [];
+
+function powerChanged() {
+  powerTimers.forEach(function (t) { clearTimeout(t); });
+  powerTimers = powerRechecksMs.map(function (ms) {
+    return setTimeout(function () {
+      recheckNative(function (ok, wrote) {
+        if (wrote) console.log('remotekeys: LG put its keys back at a power change; set again' + (ok ? '' : ', and the TV did not take it'));
+      });
+    }, ms);
+  });
+}
+
+/*
  * On webOS 11, every half hour: LG's server can send the streaming buttons'
  * list again, which puts back LG's apps. Reads only, unless a key set here has
  * been changed back. Nothing elsewhere, where the filter's values are
@@ -998,6 +1023,7 @@ module.exports = {
   homeApp: readHome,
   ensure: ensure,
   recheckNative: recheckNative,
+  powerChanged: powerChanged,
   RECHECK_MS: RECHECK_MS,
   restore: restore,
   filterSource: filterSource,

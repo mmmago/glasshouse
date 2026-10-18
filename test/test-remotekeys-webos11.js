@@ -109,7 +109,7 @@ Subscription.prototype.stop = function () { this.running = false; };
 function liveSubs() { return subs.filter(function (x) { return x.running; }); }
 
 // No KeyFilters directory, as on the TV.
-var initOpts = { luna: luna, subscription: Subscription, reapplyDelayMs: 5, inputNames: { hdmi2: 'Apple TV' }, stateDir: stateDir, filtersDir: path.join(dir, 'KeyFilters') };
+var initOpts = { luna: luna, subscription: Subscription, reapplyDelayMs: 5, powerRechecksMs: [30, 120], inputNames: { hdmi2: 'Apple TV' }, stateDir: stateDir, filtersDir: path.join(dir, 'KeyFilters') };
 rk.init(initOpts);
 
 function exists(p) { try { fs.statSync(p); return true; } catch (e) { return false; } }
@@ -280,6 +280,24 @@ step('LG\'s list written back at standby is set again within moments, and the wa
         next();
       });
     }, 50);
+  });
+});
+
+step('LG\'s list written back at a power change with nothing announced is set again by the checks after it', function (next) {
+  set('netflix', 'open', 'youtube.leanback.v4', function () {
+    var before = copy(tv.mapping);
+    // As the TV comes back on: LG's entries, and no message to the subscriber.
+    tv.mapping = copy(MAPPING);
+    rk.powerChanged();
+    setTimeout(function () {
+      assert.deepEqual(entry('netflix'), { launch_param: null, app_id: 'youtube.leanback.v4', isActive: true });
+      // A second write later is caught by the next check.
+      tv.mapping = copy(MAPPING);
+      setTimeout(function () {
+        assert.deepEqual(tv.mapping, before);
+        set('netflix', 'lg', '', next);
+      }, 120);
+    }, 70);
   });
 });
 
