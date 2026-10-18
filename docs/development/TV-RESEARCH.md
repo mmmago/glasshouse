@@ -642,7 +642,30 @@ app in front. Remote Keys puts its own filter first.
   nothing new, whatever `inputHub` and `colorRed` held.
 - **Keys sent over the network still reach them.** `sendKeyCode` with 362
   (Guide) opened `com.webos.app.livemenu`, launched by
-  `com.webos.starfish.keyfilters`.
+  `com.webos.starfish.keyfilters`. Codes above the remote's own input
+  devices' range (Alexa 1086, the ? button 1124, 123 994) reached nothing,
+  written to any of them.
+- **`lginput2` logs every press by name.** `NL_BUTTON_CLICK` in
+  `/var/log/messages` gives `remote_type` and `button_type`. On an MR25GA:
+  `KEY_HOMEDASHBOARD` (the house in a circle; opens
+  `com.webos.app.homeconnect-overlay` through `keyaction.inputHub`),
+  `KEY_MULTIKEY` (?), `KEY_GUIDE`, `KEY_VOICE` (AI), `KEY_HOME`,
+  `KEY_SCREEN_REMOTE` (123), `KEY_ALEXAVOICE`, `KEY_NETFLIX`, `KEY_AMAZON`.
+- **The ? button is LG's custom button.** A press launches
+  `other.customShortPress` (`{ id, type: "app", params }`, LG's default the
+  input picker) with mode `customkey`, a hold `other.customLongPress`
+  (Accessibility). A change applies at the next press. With `type: "None"` a
+  press opened `com.webos.app.accessibility`.
+- **AI, Home, 123 and Alexa read no value.** AI goes to
+  `com.webos.service.voiceconductor` whatever `keyaction.voice` holds; Home
+  launches `com.webos.app.home` from the filter; 123 stays in the compositor
+  (`NL_SCREEN_REMOTE_APP_USE`); Alexa is launched by
+  `amazon.alexa.adapter.plugin`.
+- **`mapping_info` is written back at each switch off and on.** At Active
+  Standby, 60 ms after `NL_POWER_STATE`, and twice more on power-on, the
+  settings service's subscribers got LG's entries again, from the copy kept
+  for the microcontroller (`com.webos.service.lowlevelstorage`, dbid `micom`).
+  configd's key actions and the custom button kept their values.
 
 ## Promoted stub apps (G3, webOS 9.2.2)
 

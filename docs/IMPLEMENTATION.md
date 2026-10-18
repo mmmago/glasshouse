@@ -628,20 +628,35 @@ change applies at once with nothing reloaded:
   writes `{ app_id, launch_param: null, isActive: true }`; **Nothing** writes
   LG's entry with `isActive: false`, and LG then shows a toast instead of
   opening an app.
-- **Guide**: the configd value `com.webos.keyaction.tvGuide`, written as
-  `{ action: "launch", id }`, or `{ action: "ignore", accept: true }` for
-  **Nothing**. On Live TV and the HDMI inputs LG's filter hands Guide to the
-  input, which opens its own guide whatever the value says.
+- **Guide and Home Hub**: the configd values `com.webos.keyaction.tvGuide`
+  and `com.webos.keyaction.inputHub`, written as `{ action: "launch", id }`,
+  or `{ action: "ignore", accept: true }` for **Nothing**. On Live TV and the
+  HDMI inputs LG's filter hands Guide to the input, which opens its own guide
+  whatever the value says.
+- **The ? button**: LG's custom button, `other.customShortPress` and
+  `other.customLongPress`, written as `{ id, type: "app", params: {} }`. A type
+  LG does not know opens Accessibility, so it has no **Nothing**.
 
 These are LG's values, not Glasshouse's, so what each held before the first
 change is kept in `/var/lib/tvweb/remotekeys-lg.json`, with what Glasshouse last
 wrote over it, and **As LG has it** writes it back. A value found different from
-both is one LG has sent since, and becomes the value to put back. The server
-checks at its start and every 30 minutes, putting a set key back where LG's
-server has replaced the list, and writes nothing while all is in place.
+both is one LG has sent since, and becomes the value to put back.
+
+LG writes its own `mapping_info` back as the TV goes into standby and twice
+more as it comes back on, from the copy the microcontroller keeps for
+streaming buttons pressed while the TV is off. While a streaming button or the
+? button is changed, the server subscribes to `mapping_info` and sets its
+values again a second after any change; more than twelve such writes in a
+minute are left to the next check, so it never takes turns with LG without
+end. It also checks at its start and every 30 minutes, writing nothing while
+all is in place. The microcontroller's copy is not changed, so a streaming
+button pressed to switch the TV on opens LG's app.
 `tvwebctl restore-keys` writes LG's values back and deletes both files. The
 other keys Glasshouse offers elsewhere (Input, the color keys, Search, Info) are
-not offered: their handling on webOS 11 ignores these values.
+not offered: their handling on webOS 11 ignores these values, as does that of
+Home, the AI and Alexa buttons and **123**. Home Hub and the ? button are
+offered only there, and left out of the JavaScript filter, whose file is
+unchanged.
 
 ## Older hardware capabilities (webOS 3.x and LCD models)
 

@@ -55,14 +55,17 @@
  * reads what a key does at each press from two of LG's own values, so a change
  * there applies at once: the streaming buttons and Apps from the settings
  * service's other.mapping_info, a list of { name: { app_id, launch_param,
- * isActive } } that LG's server sends, and Guide from the configd value
- * com.webos.keyaction.tvGuide. What each held before Glasshouse changed it is
+ * isActive } } that LG's server sends, Guide and Home Hub from the configd
+ * values com.webos.keyaction.*, and the ? button from LG's custom button
+ * settings. What each held before Glasshouse changed it is
  * kept in remotekeys-lg.json and put back for As LG has it, beside what was
  * last written: a value found different from that is LG's own new one, as its
  * server resends mapping_info, and becomes the one to put back. With isActive
  * false a streaming button opens nothing and LG shows a toast. On Live TV and
  * the HDMI inputs LG's filter hands Guide to the input, which opens its own
- * guide whatever the value says. Home is not offered there.
+ * guide whatever the value says. LG writes its list back at each switch off
+ * and on, so it is followed and set again; see watchLg. Home is not offered
+ * there.
  *
  * Strict ES5: runs on node 0.12.
  */
@@ -90,8 +93,10 @@ var APP_PREFIX = 'com.webos.app.';
 var NATIVE_FILTERS_KEY = 'com.webos.surfacemanager.keyFiltersCpp';
 var KEY_ACTION_PREFIX = 'com.webos.keyaction.';
 // Keys whose action is a configd value there, by the value's name.
-var NATIVE_ACTIONS = { guide: 'tvGuide' };
-var MAPPING_CATEGORY = 'other';
+var NATIVE_ACTIONS = { guide: 'tvGuide', homehub: 'inputHub' };
+// Keys whose action is one of the settings service's, by the setting's name.
+var NATIVE_SETTINGS = { multikey: 'customShortPress', multikeyhold: 'customLongPress' };
+var OTHER_CATEGORY = 'other';
 var MAPPING_KEY = 'mapping_info';
 
 /*
@@ -121,6 +126,13 @@ var KEYS = [
   { key: 'alexa', symbol: 'WebOS.Key_webOS_ALEXA', title: 'Alexa' },
   { key: 'googleassistant', symbol: 'WebOS.Key_webOS_GoogleVoice', title: 'Google Assistant' },
   { key: 'apps', symbol: 'WebOS.Key_webOS_Apps', title: 'Apps' },
+  // Only webOS 11's native filters let these be changed (NATIVE_ACTIONS,
+  // NATIVE_SETTINGS); the JavaScript filter leaves them out, so its file is
+  // unchanged. Home Hub is the MR25's house-in-a-circle button (IR 1031); the
+  // ? button (IR 1132) is LG's custom button, with an action of its own when held.
+  { key: 'homehub', title: 'Home Hub', nativeOnly: true },
+  { key: 'multikey', title: '? button', nativeOnly: true, noNothing: true },
+  { key: 'multikeyhold', title: '? button, held', nativeOnly: true, noNothing: true },
   { key: 'guide', symbol: 'WebOS.Key_webOS_TVGuide', title: 'Guide' },
   { key: 'input', symbol: 'WebOS.Key_webOS_InputSource', title: 'Input' },
   { key: 'livetv', symbol: 'WebOS.Key_webOS_InputTV', title: 'TV' },
@@ -139,6 +151,8 @@ var stateDir = '/var/lib/tvweb';
 var filtersDir = LG_FILTERS_DIR;
 var tvKeys = null;      // the symbols this TV's filters name, read once
 var nativeFilters = null; // whether configd names native filters, once answered
+var SubscriptionCtor = null; // luna.Subscription, to follow LG's settings
+var reapplyDelayMs = 1000;
 
 function init(opts) {
   opts = opts || {};
@@ -148,6 +162,10 @@ function init(opts) {
   filtersDir = opts.filtersDir || LG_FILTERS_DIR;
   tvKeys = null;
   nativeFilters = null;
+  watchLg(false);
+  reapplied = [];
+  SubscriptionCtor = opts.subscription || null;
+  if (typeof opts.reapplyDelayMs === 'number') reapplyDelayMs = opts.reapplyDelayMs;
 }
 
 // The TV's country as privacy.js learns it, or '' before it has.
@@ -178,7 +196,7 @@ function keysOnTv() {
   } catch (e) {
     return null;
   }
-  tvKeys = KEYS.filter(function (k) { return src.indexOf(k.symbol) !== -1; });
+  tvKeys = KEYS.filter(function (k) { return !k.nativeOnly && src.indexOf(k.symbol) !== -1; });
   return tvKeys;
 }
 
@@ -251,6 +269,7 @@ function filterSource() {
     '    var codes = {};'
   ];
   KEYS.forEach(function (k) {
+    if (k.nativeOnly) return;
     lines.push('    try { codes[' + JSON.stringify(k.key) + '] = ' + k.symbol + '; } catch (e) {}');
   });
   lines.push(
@@ -441,9 +460,13 @@ function hasNativeFilters(cb) {
 }
 
 // LG's values as they were before Glasshouse changed them, and what it last
-// wrote over each: { mapping, mappingWritten, actions, actionsWritten }.
+// wrote over each, by kind: mapping (the streaming buttons), actions (configd
+// key actions) and settings (the ? button), each beside its ...Written.
+var LG_KINDS = ['mapping', 'actions', 'settings'];
+
 function readLg() {
-  var out = { mapping: {}, mappingWritten: {}, actions: {}, actionsWritten: {} };
+  var out = {};
+  LG_KINDS.forEach(function (k) { out[k] = {}; out[k + 'Written'] = {}; });
   try {
     var j = JSON.parse(fs.readFileSync(lgFile(), 'utf8'));
     Object.keys(out).forEach(function (k) { if (j && j[k] && typeof j[k] === 'object') out[k] = j[k]; });
@@ -451,8 +474,13 @@ function readLg() {
   return out;
 }
 
+// Whether any of LG's values of these kinds (all by default) is changed.
+function lgHolds(lg, kinds) {
+  return (kinds || LG_KINDS).some(function (k) { return Object.keys(lg[k]).length > 0; });
+}
+
 function writeLg(lg) {
-  if (!Object.keys(lg.mapping).length && !Object.keys(lg.actions).length) {
+  if (!lgHolds(lg)) {
     try { fs.unlinkSync(lgFile()); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     return;
   }
@@ -472,16 +500,31 @@ function copyValue(v) { return v === undefined ? undefined : JSON.parse(JSON.str
 
 // The streaming buttons' list, or null.
 function readMapping(cb) {
-  lunaFn('com.webos.settingsservice/getSystemSettings', { category: MAPPING_CATEGORY, keys: [MAPPING_KEY] }, function (r) {
+  lunaFn('com.webos.settingsservice/getSystemSettings', { category: OTHER_CATEGORY, keys: [MAPPING_KEY] }, function (r) {
     var list = r && r.settings && r.settings[MAPPING_KEY];
     cb(Array.isArray(list) ? list : null);
   });
 }
 
-function writeMapping(list, cb) {
-  var settings = {};
-  settings[MAPPING_KEY] = list;
-  lunaFn('com.webos.settingsservice/setSystemSettings', { category: MAPPING_CATEGORY, settings: settings }, function (r) {
+/*
+ * The ? button's settings by name, or null. Asked apart from the list: a
+ * firmware without them must not cost the streaming buttons.
+ */
+function readSettings(cb) {
+  var names = Object.keys(NATIVE_SETTINGS).map(function (k) { return NATIVE_SETTINGS[k]; });
+  lunaFn('com.webos.settingsservice/getSystemSettings', { category: OTHER_CATEGORY, keys: names }, function (r) {
+    if (!r || !r.settings) return cb(null);
+    var out = {};
+    names.forEach(function (n) {
+      var v = r.settings[n];
+      if (v && typeof v === 'object' && typeof v.id === 'string') out[n] = v;
+    });
+    cb(out);
+  });
+}
+
+function writeSettings(settings, cb) {
+  lunaFn('com.webos.settingsservice/setSystemSettings', { category: OTHER_CATEGORY, settings: settings }, function (r) {
     cb(!!(r && r.returnValue));
   });
 }
@@ -500,6 +543,17 @@ function readActions(cb) {
   });
 }
 
+// Everything the native keys are read from: cb({ list, actions, settings }).
+function readNative(cb) {
+  readMapping(function (list) {
+    readActions(function (actions) {
+      readSettings(function (settings) {
+        cb({ list: list, actions: actions, settings: settings });
+      });
+    });
+  });
+}
+
 // The entry for a streaming button in LG's list, or undefined.
 function mappingEntry(list, name) {
   for (var i = 0; i < (list || []).length; i++) {
@@ -509,13 +563,16 @@ function mappingEntry(list, name) {
 }
 
 /*
- * The keys a webOS 11 TV offers: Guide where configd has its action, and each
- * streaming button LG's list has switched on, as LG had it.
+ * The keys a webOS 11 TV offers: Guide and Home Hub where configd has their
+ * actions, the ? button where the settings service has it, and each streaming
+ * button LG's list has switched on, as LG had it.
  */
-function nativeKeys(list, actions, lg) {
+function nativeKeys(tv, lg) {
   return KEYS.filter(function (k) {
-    if (NATIVE_ACTIONS[k.key]) return !!(actions && actions[NATIVE_ACTIONS[k.key]]);
-    var entry = lg.mapping[k.key] || mappingEntry(list, k.key);
+    if (NATIVE_ACTIONS[k.key]) return !!(tv.actions && tv.actions[NATIVE_ACTIONS[k.key]]);
+    if (NATIVE_SETTINGS[k.key]) return !!(tv.settings && tv.settings[NATIVE_SETTINGS[k.key]]);
+    if (k.nativeOnly) return false;
+    var entry = lg.mapping[k.key] || mappingEntry(tv.list, k.key);
     return !!(entry && typeof entry === 'object' && entry.isActive !== false);
   });
 }
@@ -534,6 +591,13 @@ function mappingWanted(map, key, lgEntry) {
 function actionWanted(map, key) {
   if (!Object.prototype.hasOwnProperty.call(map, key)) return undefined;
   return map[key] ? { action: 'launch', id: map[key] } : { action: 'ignore', accept: true };
+}
+
+// The ? button has no setting for nothing: LG opens Accessibility for a type
+// it does not know. So it opens an app, or is LG's.
+function settingWanted(map, key) {
+  if (!Object.prototype.hasOwnProperty.call(map, key) || !map[key]) return undefined;
+  return { id: map[key], type: 'app', params: {} };
 }
 
 /*
@@ -561,55 +625,127 @@ function reconcile(name, current, wanted, saved, written) {
 /*
  * Puts a webOS 11 TV's keys as the map says, or as LG had them all with
  * mapOverride {}. LG's values are written only where they differ, and the
- * record of them is kept only once every write has gone through. cb(ok).
+ * record of them is kept only once every write has gone through. One runs at
+ * a time, as each reads LG's values and writes them back whole.
+ * cb(ok, wrote).
  */
+var applyQueue = [];
 function applyNative(cb, mapOverride) {
+  applyQueue.push({ cb: cb, map: mapOverride });
+  if (applyQueue.length === 1) applyNext();
+}
+
+function applyNext() {
+  var job = applyQueue[0];
+  if (!job) return;
+  applyNativeNow(function (ok, wrote) {
+    applyQueue.shift();
+    applyNext();
+    job.cb(ok, !!wrote);
+  }, job.map);
+}
+
+function applyNativeNow(cb, mapOverride) {
   var map = mapOverride || readMap();
   var lg = readLg();
-  if (!Object.keys(map).length && !Object.keys(lg.mapping).length && !Object.keys(lg.actions).length) return cb(true);
-  readMapping(function (list) {
-    readActions(function (actions) {
-      if (!list && !actions) return cb(false);
-      var nextList = copyValue(list);
-      var listChanged = false;
-      (nextList || []).forEach(function (entry) {
-        Object.keys(entry || {}).forEach(function (name) {
-          var def = keyByName(name);
-          if (!def || NATIVE_ACTIONS[name]) return;
-          var v = reconcile(name, entry[name], function (lgEntry) { return mappingWanted(map, name, lgEntry); },
-            lg.mapping, lg.mappingWritten);
-          if (v !== undefined) { entry[name] = v; listChanged = true; }
-        });
-      });
-      var configs = {};
-      Object.keys(NATIVE_ACTIONS).forEach(function (key) {
-        var name = NATIVE_ACTIONS[key];
-        if (!actions || !actions[name]) return;
-        var v = reconcile(name, actions[name], function () { return actionWanted(map, key); },
-          lg.actions, lg.actionsWritten);
-        if (v !== undefined) configs[KEY_ACTION_PREFIX + name] = v;
-      });
-      var finish = function (ok) {
-        if (!ok) return cb(false);
-        try {
-          writeLg(lg);
-        } catch (e) {
-          console.log('remotekeys: could not write ' + lgFile() + ': ' + e.message);
-          return cb(false);
-        }
-        cb(true);
-      };
-      var writeActions = function () {
-        if (!Object.keys(configs).length) return finish(true);
-        lunaFn('com.webos.service.config/setConfigs', { configs: configs }, function (r) { finish(!!(r && r.returnValue)); });
-      };
-      if (!listChanged) return writeActions();
-      writeMapping(nextList, function (ok) {
-        if (!ok) return cb(false);
-        writeActions();
+  if (!Object.keys(map).length && !lgHolds(lg)) {
+    watchLg(false);
+    return cb(true, false);
+  }
+  readNative(function (tv) {
+    if (!tv.list && !tv.actions && !tv.settings) return cb(false, false);
+    var settings = {};
+    var nextList = copyValue(tv.list);
+    var listChanged = false;
+    (nextList || []).forEach(function (entry) {
+      Object.keys(entry || {}).forEach(function (name) {
+        var def = keyByName(name);
+        if (!def || def.nativeOnly || NATIVE_ACTIONS[name]) return;
+        var v = reconcile(name, entry[name], function (lgEntry) { return mappingWanted(map, name, lgEntry); },
+          lg.mapping, lg.mappingWritten);
+        if (v !== undefined) { entry[name] = v; listChanged = true; }
       });
     });
+    if (listChanged) settings[MAPPING_KEY] = nextList;
+    Object.keys(NATIVE_SETTINGS).forEach(function (key) {
+      var name = NATIVE_SETTINGS[key];
+      if (!tv.settings || !tv.settings[name]) return;
+      var v = reconcile(name, tv.settings[name], function () { return settingWanted(map, key); },
+        lg.settings, lg.settingsWritten);
+      if (v !== undefined) settings[name] = v;
+    });
+    var configs = {};
+    Object.keys(NATIVE_ACTIONS).forEach(function (key) {
+      var name = NATIVE_ACTIONS[key];
+      if (!tv.actions || !tv.actions[name]) return;
+      var v = reconcile(name, tv.actions[name], function () { return actionWanted(map, key); },
+        lg.actions, lg.actionsWritten);
+      if (v !== undefined) configs[KEY_ACTION_PREFIX + name] = v;
+    });
+    var wrote = Object.keys(settings).length > 0 || Object.keys(configs).length > 0;
+    var finish = function (ok) {
+      if (!ok) return cb(false, wrote);
+      try {
+        writeLg(lg);
+      } catch (e) {
+        console.log('remotekeys: could not write ' + lgFile() + ': ' + e.message);
+        return cb(false, wrote);
+      }
+      watchLg(lgHolds(lg, ['mapping', 'settings']));
+      cb(true, wrote);
+    };
+    var writeActions = function () {
+      if (!Object.keys(configs).length) return finish(true);
+      lunaFn('com.webos.service.config/setConfigs', { configs: configs }, function (r) { finish(!!(r && r.returnValue)); });
+    };
+    if (!Object.keys(settings).length) return writeActions();
+    writeSettings(settings, function (ok) {
+      if (!ok) return cb(false, wrote);
+      writeActions();
+    });
   });
+}
+
+/*
+ * LG writes its own streaming buttons' list back as the TV goes into standby
+ * (a C5 on 11.2.0, 60 ms after Active Standby, and twice more as it comes
+ * back on), and the settings service tells its subscribers. While one of LG's
+ * settings is changed, Glasshouse subscribes and puts its own back a second
+ * after any change. More than twelve such writes in a minute are left to the
+ * half-hourly check, so Glasshouse and LG never take turns without end.
+ */
+var REAPPLY_LIMIT = 12;
+var REAPPLY_WINDOW_MS = 60000;
+var watcher = null;
+var reapplyTimer = null;
+var reapplied = [];
+
+function watchLg(on) {
+  if (!SubscriptionCtor) return;
+  if (on && !watcher) {
+    watcher = new SubscriptionCtor('com.webos.settingsservice/getSystemSettings',
+      { category: OTHER_CATEGORY, keys: [MAPPING_KEY], subscribe: true }, null, { message: lgChanged });
+    watcher.start();
+  } else if (!on && watcher) {
+    watcher.stop();
+    watcher = null;
+    if (reapplyTimer) { clearTimeout(reapplyTimer); reapplyTimer = null; }
+  }
+}
+
+function lgChanged() {
+  if (reapplyTimer) return;
+  reapplyTimer = setTimeout(function () {
+    reapplyTimer = null;
+    var now = Date.now();
+    reapplied = reapplied.filter(function (t) { return t <= now && now - t < REAPPLY_WINDOW_MS; });
+    if (reapplied.length >= REAPPLY_LIMIT) return;
+    applyNative(function (ok, wrote) {
+      if (!wrote) return;
+      reapplied.push(Date.now());
+      console.log('remotekeys: LG put its keys back; set again' + (ok ? '' : ', and the TV did not take it'));
+    });
+  }, reapplyDelayMs);
 }
 
 /*
@@ -622,11 +758,9 @@ function offeredKeys(cb) {
   if (onTv && onTv.length) return cb(onTv, 'filter');
   hasNativeFilters(function (yes) {
     if (!yes) return cb(null);
-    readMapping(function (list) {
-      readActions(function (actions) {
-        var keys = nativeKeys(list, actions, readLg());
-        cb(keys.length ? keys : null, 'native');
-      });
+    readNative(function (tv) {
+      var keys = nativeKeys(tv, readLg());
+      cb(keys.length ? keys : null, 'native');
     });
   });
 }
@@ -685,7 +819,7 @@ function describeKeys(keys, inChain, cb) {
     var out = keys.map(function (k) {
       var set = Object.prototype.hasOwnProperty.call(map, k.key);
       var id = set ? map[k.key] : null;
-      return {
+      var key = {
         key: k.key,
         title: k.title,
         action: !set ? 'lg' : (id ? 'open' : 'nothing'),
@@ -693,6 +827,8 @@ function describeKeys(keys, inChain, cb) {
         opens: id ? (titles[id] || id) : '',
         elsewhere: !!(cc && k.regions && k.regions.indexOf(cc) === -1)
       };
+      if (k.noNothing) key.noNothing = true;
+      return key;
     });
     cb({
       ok: true, supported: true, keys: out,
@@ -726,6 +862,7 @@ function setOfferedKey(def, action, id, cb) {
     return save(map, cb);
   }
   if (action === 'nothing') {
+    if (def.noNothing) return cb({ ok: false, error: msg('srv.remoteKeys.noNothing', 'This key cannot be set to do nothing') });
     map[def.key] = '';
     return save(map, cb);
   }

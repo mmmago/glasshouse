@@ -4719,6 +4719,10 @@
   "text": "No se pudieron leer las apps de la TV. Inténtalo de nuevo en un momento.",
   "from": "Could not read the TV's apps. Try again in a moment."
  },
+ "srv.remoteKeys.noNothing": {
+  "text": "Esta tecla no se puede configurar para no hacer nada",
+  "from": "This key cannot be set to do nothing"
+ },
  "srv.remoteKeys.saveFailed": {
   "text": "No se pudo guardar el cambio: {error}",
   "from": "Could not save the change: {error}"
