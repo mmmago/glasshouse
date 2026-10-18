@@ -31,6 +31,7 @@ var names = require('./names');
 var writeJsonAtomic = require('./util').writeJsonAtomic;
 var wallpapers = require('./home-wallpapers');
 var takeover = require('./home-takeover');
+var recent = require('./home-recent');
 
 // The separate app earlier builds installed: removed, and its settings undone.
 var HOME_APP = 'com.tvweb.home';
@@ -39,6 +40,10 @@ var LIVE_TV = 'com.webos.app.livetv';
 var SETTINGS = 'com.webos.service.settings/';
 
 var ROWS = ['app', 'dev', 'ch'];
+// How a row is ordered: as arranged ('custom'), or the tile opened last first ('recent').
+var SORTS = ['custom', 'recent'];
+// An input opened from its tile is recorded as that device, not as the whole input.
+var TILE_OPEN_MS = 15000;
 /*
  * LG's own promotions and hardware-dependent apps, hidden until shown. Ids as
  * a G3 (webOS 9.2) lists them: LG Channels, Sports, Always Ready, Alexa and
@@ -131,6 +136,10 @@ var switchWant = null;
 var switchWaiting = [];
 var legacyAppPending = false;
 var legacyAppRemoving = false;
+// The input app a device tile opened last, and when: { app, at }.
+var tileInput = null;
+// While the channel Live TV was left on is read, what waits for it; null otherwise.
+var channelReading = null;
 
 function configFile() { return path.join(stateDir, 'home.json'); }
 
@@ -158,6 +167,7 @@ function defaults() {
     restorePending: false,
     rows: ROWS.slice(),
     order: { app: [], dev: [], ch: [] },
+    sort: { app: 'custom', dev: 'custom', ch: 'custom' },
     hidden: { app: PROMO_APPS.slice(), dev: [], ch: [] },
     channels: [],
     hintSeen: false,
@@ -183,6 +193,7 @@ function normalise(raw) {
   d.rows = rows;
   ROWS.forEach(function (r) {
     if (raw.order && typeof raw.order === 'object') d.order[r] = stringList(raw.order[r]);
+    if (raw.sort && typeof raw.sort === 'object' && SORTS.indexOf(raw.sort[r]) !== -1) d.sort[r] = raw.sort[r];
     if (raw.hidden && typeof raw.hidden === 'object') {
       d.hidden[r] = stringList(raw.hidden[r]).filter(function (id) { return !(r === 'app' && id === LG_HOME_TILE); });
     }
@@ -236,6 +247,16 @@ function readConfig() {
   return config;
 }
 
+/*
+ * Changes whenever home.json does, from either dashboard, the view itself or
+ * an edit over SSH: the view reloads its layout when its heartbeat brings a
+ * new one, so a change made elsewhere shows while it is on screen.
+ */
+function layoutVersion() {
+  readConfig();
+  return String(configMtime);
+}
+
 function saveConfig() {
   try {
     writeJsonAtomic(configFile(), config, 384);
@@ -277,6 +298,7 @@ function setLayout(body, cb) {
     hideLgHomeAtStart: c.hideLgHomeAtStart,
     rows: body.rows !== undefined ? body.rows : c.rows,
     order: perRow(body.order, c.order),
+    sort: perRow(body.sort, c.sort),
     hidden: perRow(body.hidden, c.hidden),
     // A moved Channels row reorders the channels themselves.
     channels: ordered(body.order && isArray(body.order.ch) ? body.order.ch : [],
@@ -288,6 +310,7 @@ function setLayout(body, cb) {
     var d = defaults();
     next.rows = d.rows;
     next.order = d.order;
+    next.sort = d.sort;
     next.hidden = d.hidden;
   }
   config = next;
@@ -296,11 +319,13 @@ function setLayout(body, cb) {
     return cb({ ok: false, error: msg('srv.home.saveFailed', 'could not save the layout') });
   }
   if (c.picture !== config.picture) pictureDetailsFn(config.picture);
-  cb({ ok: true, layout: layoutOf(config) });
+  // A row back in its own order keeps no record of what was opened.
+  ROWS.forEach(function (r) { if (config.sort[r] !== 'recent') recent.forget(r); });
+  cb({ ok: true, layout: layoutOf(config), layoutVersion: layoutVersion() });
 }
 
 function layoutOf(c) {
-  return { rows: c.rows, order: c.order, hidden: c.hidden, channels: c.channels, hintSeen: c.hintSeen, picture: c.picture };
+  return { rows: c.rows, order: c.order, sort: c.sort, hidden: c.hidden, channels: c.channels, hintSeen: c.hintSeen, picture: c.picture };
 }
 
 // ---------------------------------------------------------------- what it shows
@@ -442,6 +467,11 @@ function channelList(cb) {
 }
 
 function catalogue(cb) {
+  if (channelReading || foreground === LIVE_TV) return noteLiveChannel(function () { rows(cb); });
+  rows(cb);
+}
+
+function rows(cb) {
   var c = readConfig();
   launchPoints(function (apps) {
     devices(function (devs) {
@@ -452,21 +482,86 @@ function catalogue(cb) {
         var picked = [];
         (chans || []).forEach(function (ch) { if (c.channels.indexOf(ch.id) !== -1) picked.push(ch); });
         picked.sort(function (a, b) { return c.channels.indexOf(a.id) - c.channels.indexOf(b.id); });
+        var order = {
+          app: ordered(c.order.app, appIds),
+          dev: ordered(c.order.dev, devIds),
+          ch: picked.map(function (p) { return p.id; })
+        };
+        ROWS.forEach(function (r) { if (c.sort[r] === 'recent') order[r] = lastOpenedFirst(r, order[r]); });
         cb({
           apps: appList.map(function (a) {
             return { id: a.id, title: a.title, icon: a.icon ? '/api/home/icon?id=' + encodeURIComponent(a.id) : null };
           }),
           devices: devs || [],
           channels: picked,
-          order: {
-            app: ordered(c.order.app, appIds),
-            dev: ordered(c.order.dev, devIds),
-            ch: picked.map(function (p) { return p.id; })
-          },
+          order: order,
           sources: { apps: !!apps, devices: !!devs, channels: chans ? chans.length : null }
         });
       });
     });
+  });
+}
+
+/*
+ * A row's ids, the one opened last first. Those never opened since the row
+ * was set to Last opened follow in the row's own order, and the LG Home tile
+ * stays last. An input opened from the TV rather than from its tile counts
+ * for every device on it.
+ */
+function lastOpenedFirst(row, ids) {
+  var times = recent.of(row);
+  var timeOf = function (id) {
+    var t = times[id] || 0;
+    if (row === 'dev') t = Math.max(t, times[id.split(':')[0]] || 0);
+    return t;
+  };
+  var sorted = ids.filter(function (id) { return id !== LG_HOME_TILE; })
+    .map(function (id, i) { return { id: id, i: i, t: timeOf(id) }; })
+    .sort(function (x, y) { return y.t - x.t || x.i - y.i; })
+    .map(function (x) { return x.id; });
+  if (ids.indexOf(LG_HOME_TILE) !== -1) sorted.push(LG_HOME_TILE);
+  return sorted;
+}
+
+// Recorded only for a row set to Last opened, and only while Glasshouse Home is on.
+function noteOpened(row, id) {
+  var c = readConfig();
+  if (c.enabled && c.sort[row] === 'recent') recent.stamp(row, id);
+}
+
+/*
+ * What sam puts in front, opened from the view or not: an app, an HDMI input,
+ * or, on leaving Live TV, the channel it was on.
+ */
+function noteForeground(was, id) {
+  if (was === LIVE_TV && id !== LIVE_TV) noteLiveChannel(function () {});
+  if (!id || id === HOME_APP || id === LG_HOME) return;
+  var m = /^com\.webos\.app\.hdmi(\d)$/.exec(id);
+  if (m) {
+    var fromTile = tileInput && tileInput.app === id && nowMs() - tileInput.at < TILE_OPEN_MS;
+    tileInput = null;
+    if (!fromTile) noteOpened('dev', 'hdmi' + m[1]);
+    return;
+  }
+  if (!isInputApp(id)) noteOpened('app', id);
+}
+
+/*
+ * The channel Live TV is on, recorded as opened. A channel changed within
+ * Live TV changes nothing in front, so it is read as Live TV leaves, and
+ * when the view asks for its rows while Live TV is still in front: on a G3
+ * (webOS 9.2) the view asks about 0.2 s before sam names it.
+ */
+function noteLiveChannel(cb) {
+  if (channelReading) return channelReading.push(cb);
+  var c = readConfig();
+  if (!c.enabled || c.sort.ch !== 'recent') return cb();
+  channelReading = [cb];
+  luna('com.webos.service.utp.boot/getLastChannelId', {}, function (r) {
+    if (r && typeof r.channelId === 'string') noteOpened('ch', r.channelId);
+    var waiting = channelReading;
+    channelReading = null;
+    waiting.forEach(function (fn) { fn(); });
   });
 }
 
@@ -590,7 +685,7 @@ function open(body, cb) {
     return launchPoints(function (apps) {
       var known = (apps || []).some(function (a) { return a.id === id; });
       if (!known) return cb({ ok: false, error: msg('srv.home.unknownTile', 'that is not on Glasshouse Home') });
-      launch(id, null, cb);
+      launch(id, null, opened('app', id, cb));
     });
   }
   if (kind === 'dev') {
@@ -599,7 +694,13 @@ function open(body, cb) {
       var hit = null;
       (devs || []).forEach(function (d) { if (d.id === id) hit = d; });
       if (!hit) return cb({ ok: false, error: msg('srv.home.unknownTile', 'that is not on Glasshouse Home') });
-      launch(names.inputAppId(hit.input), null, cb);
+      var input = { app: names.inputAppId(hit.input), at: nowMs() };
+      tileInput = input;
+      launch(input.app, null, function (r) {
+        // A refused tile must not consume the next input switch from the remote.
+        if (!r.ok && tileInput === input) tileInput = null;
+        opened('dev', hit.id, cb)(r);
+      });
     });
   }
   if (kind === 'ch') {
@@ -611,13 +712,20 @@ function open(body, cb) {
       // Live TV's launch parameters do not change the channel while it is
       // open; openChannel tunes, and brings Live TV to the front.
       luna('com.webos.service.apiadapter/tv/openChannel', { channelId: hit.id }, function (r) {
-        cb({ ok: !!(r && r.returnValue), error: r && r.returnValue ? undefined : msg('srv.home.launchRefused', 'the TV would not open it') });
+        opened('ch', hit.id, cb)({ ok: !!(r && r.returnValue), error: r && r.returnValue ? undefined : msg('srv.home.launchRefused', 'the TV would not open it') });
       });
     });
   }
   cb({ ok: false, error: 'kind must be app, dev, ch or lg' });
 }
 
+// A tile's callback that first records it as opened, if it opened.
+function opened(row, id, cb) {
+  return function (r) {
+    if (r && r.ok) noteOpened(row, id);
+    cb(r);
+  };
+}
 
 /*
  * LG's Home, by the LG Home tile, holding Home, or a view that is not
@@ -990,7 +1098,8 @@ function watchBeat(ms) {
 function beat() {
   lastBeatAt = nowMs();
   if (viewInFront()) watchBeat(BEAT_GRACE_MS);
-  return { ok: true, enabled: readConfig().enabled, build: buildId, wallpapers: wallpapers.status() };
+  return { ok: true, enabled: readConfig().enabled, build: buildId, wallpapers: wallpapers.status(),
+           layoutVersion: layoutVersion() };
 }
 
 function foregroundChanged(id) {
@@ -999,6 +1108,7 @@ function foregroundChanged(id) {
   if (legacyAppPending) tryRemoveLegacyApp();
   if (id !== HOME_APP && id !== LG_HOME && id) lastSource = { appId: id, at: nowMs() };
   if (!readConfig().enabled) return;
+  noteForeground(was, id);
   if (id === LG_HOME) {
     if (was !== LG_HOME && viewInFront() && powerActive) watchBeat(FIRST_BEAT_GRACE_MS);
     return;
@@ -1076,6 +1186,7 @@ function init(opts) {
   historyModule = opts.history || null;
   if (opts.stateDir) stateDir = opts.stateDir;
   wallpapers.init(stateDir);
+  recent.init(stateDir, opts.now);
   takeover.init({
     luna: lunaFn,
     samrescan: opts.samrescan || null,
@@ -1119,6 +1230,8 @@ function init(opts) {
   switchWaiting = [];
   legacyAppPending = false;
   legacyAppRemoving = false;
+  tileInput = null;
+  channelReading = null;
   if (liveState) {
     liveState.state.onChange(function (ev) {
       if (ev.group === 'application' && ev.key === 'app_id') foregroundChanged(String(ev.value || ''));
@@ -1185,6 +1298,7 @@ function stop() {
   if (holdTimer) clearTimeout(holdTimer);
   holdTimer = null;
   homeKeysFn(false);
+  recent.flush();
 }
 
 module.exports = {
@@ -1192,6 +1306,8 @@ module.exports = {
   init: init,
   start: start,
   stop: stop,
+  // What was opened, written now rather than after its short delay, as the server stops.
+  flush: recent.flush,
   status: status,
   catalogue: catalogue,
   channelList: channelList,
@@ -1204,6 +1320,7 @@ module.exports = {
   disable: function (cb) { change(function (done) { disable(function (r) { homeKeysFn(false); done(r); }); }, cb); },
   uninstall: function (cb) { change(uninstall, cb); },
   beat: beat,
+  layoutVersion: layoutVersion,
   homeKey: homeKey,
   iconPath: iconPath,
   wallpaperPath: wallpapers.image,

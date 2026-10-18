@@ -147,6 +147,7 @@ function luna(uri, p, cb) {
     r.running = tv.oldAppRunning ? [{ id: OLD_APP }] : [];
   } else if (uri === 'com.webos.applicationManager/launch') {
     tv.launched.push(p.id);
+    if (tv.launchFails) r.returnValue = false;
   } else if (uri === 'com.webos.applicationManager/listLaunchPoints') {
     r.launchPoints = [
       { id: 'netflix', title: 'Netflix', icon: '/x/netflix.png' },
@@ -166,7 +167,9 @@ function luna(uri, p, cb) {
       ] }
     ];
   } else if (uri === 'com.webos.service.apiadapter/tv/getChannelList') {
-    r.channelList = [];
+    r.channelList = (tv.channels || []).map(function (id) { return { channelId: id, channelNumber: id, channelName: id }; });
+  } else if (uri === 'com.webos.service.utp.boot/getLastChannelId') {
+    r.channelId = tv.lastChannel;
   }
   process.nextTick(function () { cb(r); });
 }
@@ -205,6 +208,21 @@ function next() {
   if (!s) { console.log('All home tests passed.'); return process.exit(0); }
   s.fn(function () { console.log('  ✓ ' + s.name); next(); });
 }
+
+step('a layout saved from a dashboard changes the version the view\'s heartbeat brings', function (done) {
+  start(null);
+  var before = home.beat().layoutVersion;
+  assert.ok(before, 'the heartbeat names a version');
+  wait(15, function () {
+    home.setLayout({ hidden: { dev: ['HDMI_1'] } }, function (r) {
+      assert.ok(r.ok, r.error);
+      var after = home.beat().layoutVersion;
+      assert.notStrictEqual(after, before, 'so the view reloads its layout');
+      assert.strictEqual(home.beat().layoutVersion, after, 'and stays put until the next change');
+      done();
+    });
+  });
+});
 
 step('the saved layout keeps its order, drops what has gone and appends what is new', function (done) {
   start({ order: { app: ['cdp-30', 'gone.app', 'netflix'], dev: [], ch: [] }, hidden: { app: [], dev: [], ch: [] } });
@@ -252,6 +270,105 @@ step('the LG Home tile cannot be hidden, and unknown rows are dropped', function
     assert.deepEqual(r.layout.rows, ['ch', 'app', 'dev']);
     done();
   });
+});
+
+var clock = 0;
+function at(id) { clock += 1000; foreground(id); }
+
+function startRecent(cb) {
+  clock = 1000;
+  start({ enabled: true, channels: ['c1', 'c2', 'c3'], order: { app: ['cdp-30', 'youtube.leanback.v4', 'netflix'] } },
+        { now: function () { return clock; } });
+  tv.channels = ['c1', 'c2', 'c3'];
+  // Opened while the rows are in their own order: nothing is recorded.
+  at('netflix');
+  home.setLayout({ sort: { app: 'recent', dev: 'recent', ch: 'recent', bogus: 'recent' } }, function (r) {
+    assert.deepEqual(r.layout.sort, { app: 'recent', dev: 'recent', ch: 'recent' });
+    cb();
+  });
+}
+
+step('a row set to Last opened puts what was opened last first, from the view or not', function (done) {
+  startRecent(function () {
+    home.catalogue(function (c) {
+      assert.deepEqual(c.order.app, ['cdp-30', 'youtube.leanback.v4', 'netflix', 'lg-home'], 'nothing opened yet: the row\'s own order');
+      at('netflix');
+      at(LG_HOME);
+      // HDMI 2 from the remote counts for both devices on it.
+      at('com.webos.app.hdmi2');
+      tv.lastChannel = 'c3';
+      at('com.webos.app.livetv');
+      // A G3 asks for the rows before sam names the view in front: Live TV still is.
+      home.catalogue(function (c2) {
+        assert.deepEqual(c2.order.app, ['netflix', 'cdp-30', 'youtube.leanback.v4', 'lg-home'], 'the LG Home tile stays last');
+        assert.deepEqual(c2.order.dev, ['hdmi2:stereo-70s', 'hdmi2:playstation-5', 'hdmi1']);
+        assert.deepEqual(c2.order.ch, ['c3', 'c1', 'c2'], 'the channel Live TV is on');
+        at(LG_HOME);
+        setImmediate(function () {
+          tv.lastChannel = 'c2';
+          at('com.webos.app.livetv');
+          at(LG_HOME);
+          // Asked once Live TV has left, before the channel it was on has been read.
+          home.catalogue(function (c3) {
+            assert.deepEqual(c3.order.ch, ['c2', 'c3', 'c1'], 'the channel Live TV was left on');
+            done();
+          });
+        });
+      });
+    });
+  });
+});
+
+step('a device\'s own tile counts for that device, and a row back in its own order is forgotten', function (done) {
+  startRecent(function () {
+    at('com.webos.app.hdmi1');
+    at(LG_HOME);
+    clock += 1000;
+    home.open({ kind: 'dev', id: 'hdmi2:playstation-5' }, function (o) {
+      assert.ok(o.ok);
+      at('com.webos.app.hdmi2');
+      home.catalogue(function (c) {
+        assert.deepEqual(c.order.dev, ['hdmi2:playstation-5', 'hdmi1', 'hdmi2:stereo-70s'], 'not the receiver on the same input');
+        home.flush();
+        var kept = JSON.parse(fs.readFileSync(path.join(dir, 'home-recent.json'), 'utf8'));
+        assert.ok(kept.dev['hdmi2:playstation-5'] && kept.dev.hdmi1);
+        assert.deepEqual(kept.app, {}, 'nothing opened while the rows were in their own order');
+        home.setLayout({ sort: { dev: 'custom' } }, function () {
+          // Inputs held the only records, so the file goes with them.
+          assert.ok(!fs.existsSync(path.join(dir, 'home-recent.json')), 'a row back in its own order forgets what was opened');
+          home.setLayout({ reset: true }, function (r) {
+            assert.deepEqual(r.layout.sort, { app: 'custom', dev: 'custom', ch: 'custom' });
+            done();
+          });
+        });
+      });
+    });
+  });
+});
+
+step('a refused device tile leaves the next remote input switch recorded', function (done) {
+  startRecent(function () {
+    at('com.webos.app.hdmi1');
+    at(LG_HOME);
+    tv.launchFails = true;
+    home.open({ kind: 'dev', id: 'hdmi2:playstation-5' }, function (r) {
+      assert.strictEqual(r.ok, false);
+      tv.launchFails = false;
+      at('com.webos.app.hdmi2');
+      home.catalogue(function (c) {
+        assert.deepEqual(c.order.dev, ['hdmi2:stereo-70s', 'hdmi2:playstation-5', 'hdmi1'], 'the remote opens the whole input after a refused tile');
+        done();
+      });
+    });
+  });
+});
+
+step('Last opened records nothing while Glasshouse Home is off', function (done) {
+  start({ enabled: false, sort: { app: 'recent' } });
+  foreground('netflix');
+  home.flush();
+  assert.ok(!fs.existsSync(path.join(dir, 'home-recent.json')));
+  done();
 });
 
 /*

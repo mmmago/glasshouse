@@ -234,6 +234,23 @@ Checked on 18 October 2026 on the same TV, with Glasshouse Home in the place:
   TV's zone, once a channel has been tuned since the TV started; before that it
   has no programme. `tv/getChannelProgramInfo` and `iepg/getEventList` returned
   empty programme lists throughout.
+- `com.webos.service.utp.boot/getLastChannelId` names the channel Live TV is
+  on, including one reached with the remote's Channel Up within Live TV, which
+  changes nothing in sam's foreground. Measured on 18 October 2026.
+
+## Glasshouse Home's view and the foreground (G3, webOS 9.2.2)
+
+Measured on 18 October 2026 by launching apps over SSH and logging
+`applicationManager/getForegroundAppInfo`'s subscription.
+
+- Launching `com.webos.app.home` from Live TV, the view's
+  `/api/home/catalogue` request reached the server about 0.2 s before sam's
+  subscription named `com.webos.app.home`. Whatever the server learns from the
+  foreground changing is not yet known when the view asks for its rows.
+- An app launched cold (Channel 4, BBC Sounds) is named once, 2 to 3 s after the
+  launch, with nothing in between. Once, during the first launch of BBC Sounds
+  that session, LG's app store (`com.webos.app.discovery`) was named for about
+  10 s before it; this could not be made to happen again.
 
 ## Which window has the remote (webOS 6.4.0, C1)
 

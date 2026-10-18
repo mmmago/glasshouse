@@ -318,6 +318,126 @@ async function visitHomeArrangement(browser, base, problems) {
 }
 
 
+
+// Each row's Order, on Glasshouse Home's own view, the Home tab and the TV app's Home section.
+async function visitHomeOrder(browser, base, problems) {
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+  page.on('pageerror', e => problems.push('Home order: ' + e.message));
+  const layout = { rows: ['app', 'dev', 'ch'], order: { app: [], dev: [], ch: [] },
+    sort: { app: 'custom', dev: 'custom', ch: 'custom' }, hidden: { app: [], dev: [], ch: [] }, channels: [], hintSeen: true };
+  const saves = [];
+  let pauseSave = false, pauseCatalogue = false, saveHeld, catalogueHeld;
+  const saveReady = new Promise(resolve => { saveHeld = resolve; });
+  const catalogueReady = new Promise(resolve => { catalogueHeld = resolve; });
+  await page.route('**/api/home**', async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    // The server sends a Last opened row in that order: here, YouTube was opened last.
+    const order = { app: layout.sort.app === 'recent' ? ['two', 'one', 'lg-home'] : ['one', 'two', 'lg-home'], dev: [], ch: [] };
+    const catalogue = { ok: true, apps: [{ id: 'one', title: 'One' }, { id: 'two', title: 'Two' }], devices: [], channels: [],
+      sources: { channels: 0 }, order, layout };
+    let body = { ok: true };
+    if (pathname === '/api/home') body = Object.assign({ ok: true, supported: { ok: true }, enabled: true, active: true,
+      writable: true, layout, history: true }, new URL(route.request().url()).searchParams.get('with') ? { catalogue, channels: [] } : {});
+    else if (pathname === '/api/home/catalogue') body = catalogue;
+    else if (pathname === '/api/home/layout') {
+      const patch = route.request().postDataJSON();
+      saves.push(patch);
+      if (patch.sort) Object.assign(layout.sort, patch.sort);
+      body = { ok: true, layout: JSON.parse(JSON.stringify(layout)) };
+    }
+    const reply = { contentType: 'application/json', body: JSON.stringify(body) };
+    if (pathname === '/api/home/layout' && pauseSave) {
+      pauseSave = false;
+      await new Promise(resolve => saveHeld(resolve));
+    }
+    if (pathname === '/api/home/catalogue' && pauseCatalogue) {
+      pauseCatalogue = false;
+      await new Promise(resolve => catalogueHeld(resolve));
+    }
+    await route.fulfill(reply);
+  });
+  const appTiles = () => page.evaluate(() => [...document.querySelectorAll('.row[data-key="app"] .tile .nm')].map(n => n.textContent).join(','));
+  try {
+    await page.goto(base + '/assets/home.html');
+    await page.waitForSelector('.tile');
+    await page.keyboard.down('Enter');
+    await page.waitForTimeout(900);
+    await page.keyboard.up('Enter');
+    await page.keyboard.press('ArrowLeft');
+    pauseSave = pauseCatalogue = true;
+    let saved = page.waitForResponse(r => new URL(r.url()).pathname === '/api/home/layout');
+    await page.keyboard.press('Enter');
+    const releaseSave = await saveReady;
+    const tryMoving = async () => {
+      await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('Enter');
+    };
+    await tryMoving();
+    if (await appTiles() !== 'One,Two,LG Home') problems.push('Home order: an edit can be lost while Order is saving');
+    releaseSave();
+    const releaseCatalogue = await catalogueReady;
+    await tryMoving();
+    if (await appTiles() !== 'One,Two,LG Home') problems.push('Home order: an edit can be lost while the saved order is loading');
+    releaseCatalogue();
+    await saved;
+    await page.waitForTimeout(200);
+    if (!saves.length || !saves[0].sort || saves[0].sort.app !== 'recent') problems.push('Home order: the Apps row\'s Order did not save Last opened');
+    if (await appTiles() !== 'Two,One,LG Home') problems.push('Home order: arranging did not show the row in last opened order');
+    // Picking a tile up keeps the order shown, now the row's own.
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    saved = page.waitForResponse(r => new URL(r.url()).pathname === '/api/home/layout');
+    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 461, bubbles: true })));
+    await saved;
+    const last = saves[saves.length - 1];
+    if (last.sort.app !== 'custom' || JSON.stringify(last.order.app) !== JSON.stringify(['one', 'two', 'lg-home'])) {
+      problems.push('Home order: moving a tile in a Last opened row did not keep the order shown as the row\'s own');
+    }
+
+    await page.waitForTimeout(200);
+    await page.keyboard.down('Enter');
+    await page.waitForTimeout(900);
+    await page.keyboard.up('Enter');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    saved = page.waitForResponse(r => new URL(r.url()).pathname === '/api/home/layout');
+    await page.locator('.row[data-key="app"] .sort').click();
+    await saved;
+    if (JSON.stringify(saves[saves.length - 1].order.app) !== JSON.stringify(['two', 'one', 'lg-home'])) {
+      problems.push('Home order: switching Order discarded the row\'s unsaved moves');
+    }
+    await page.waitForTimeout(200);
+    await page.keyboard.press('ArrowRight');
+    if (await page.locator('.tile.focus .nm').allTextContents() + '' !== 'Two') {
+      problems.push('Home order: clicking Order while holding a tile did not release it');
+    }
+
+    layout.sort.app = 'recent';
+    await page.goto(base + '/?tab=home');
+    await page.waitForSelector('#home-sort-app:not(:disabled)');
+    if (!await page.locator('details.home-row[data-kind="app"] .home-tile button[aria-label="Later"]').first().isDisabled()) {
+      problems.push('Home order: tiles in a Last opened row can be moved on the Home tab');
+    }
+    saved = page.waitForResponse(r => new URL(r.url()).pathname === '/api/home/layout');
+    await page.locator('#home-sort-app').selectOption('custom');
+    await saved;
+    if (saves[saves.length - 1].sort.app !== 'custom') problems.push('Home order: the Home tab did not save Your order');
+
+    await page.goto(base + '/assets/dashboard.html?tab=home');
+    await page.waitForFunction(() => document.body.innerText.indexOf('Your order') !== -1);
+    // One for Apps and one for Channels: the fixture has no inputs, and an empty row has no section.
+    const orders = await page.evaluate(() => (document.body.innerText.match(/Your order|Last opened/g) || []).length);
+    if (orders !== 2) problems.push('Home order: the TV app\'s Home section has no Order for each row');
+  } finally { await page.close(); }
+}
+
 // Saves are acknowledged before another edit can replace a whole list.
 async function visitHomeEditor(browser, base, problems) {
   const page = await browser.newPage();
@@ -511,12 +631,13 @@ async function visitHomeReadiness(browser, base, problems) {
   await visitHomeArrangement(browser, base, problems);
   await visitHomePicture(browser, base, problems);
   await visitHomeEditor(browser, base, problems);
+  await visitHomeOrder(browser, base, problems);
   await visitHomeUploads(browser, base, problems);
   await visitHomeReadiness(browser, base, problems);
   await visitHomeAvailability(browser, base, problems);
   await browser.close();
   for (const p of problems) console.log(p);
   console.log((web.length + tv.length) + ' tabs opened (' + web.length + ' web, ' + tv.length + ' TV app), ' +
-              'Home arranging, picture, update, editing, uploads, readiness and availability checked, ' + problems.length + ' problem' + (problems.length === 1 ? '' : 's'));
+              'Home arranging, picture, update, editing, order, uploads, readiness and availability checked, ' + problems.length + ' problem' + (problems.length === 1 ? '' : 's'));
   process.exit(problems.length ? 1 : 0);
 })().catch(e => { console.error(e.message); process.exit(1); });

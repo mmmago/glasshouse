@@ -105,6 +105,10 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
 
 /* Arranging */
 .arranging .row h2{color:#ece7df}
+.row h2 .sort{display:none;margin-left:22px;font-style:normal;font-size:20px;color:#a39d93;padding:4px 14px;border-radius:5px;background:#141310;
+  outline:2px solid transparent;vertical-align:2px}
+.arranging .row h2 .sort{display:inline-block}
+.arranging .row .sort.focus{color:#ece7df;outline-color:#e9ad55}
 .arranging .tile.focus{outline-color:#e9ad55}
 .arranging .tile.held{-webkit-transform:translateY(-8px);transform:translateY(-8px);background:#231d12;outline:2px dashed #e9ad55}
 .row .tile.hidden{opacity:.22}
@@ -165,7 +169,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
 
   <div id="banner">
     <span><b data-t="home.arrange.title">Arranging</b><span id="bannerState">&mdash;</span></span>
-    <span class="keys" data-t="home.arrange.keys">OK picks a tile up or puts it down. Held, the arrows move it or its row, and Back hides or shows it, or removes a channel.</span>
+    <span class="keys" data-t="home.arrange.keys">OK picks a tile up or puts it down. Held, the arrows move it or its row, and Back hides or shows it, or removes a channel. Left of a row, OK sets its order.</span>
     <span class="btn" id="btnHide" data-t="home.arrange.hide">Hide or show</span>
     <span class="btn" id="btnReset" data-t="home.arrange.reset">Reset</span>
     <span class="btn" id="btnDone" data-t="home.arrange.done">Done</span>
@@ -201,15 +205,19 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
   var BEAT_MS = 5000;
 
   var data = null;       // the catalogue: apps, devices, channels, order
-  var layout = null;     // rows, order, hidden, channels, hintSeen, picture
+  var layout = null;     // rows, order, sort, hidden, channels, hintSeen, picture
   var guideData = {};
   var lastOn = { kind: null };
   // last: the tile focused last, which the bar's Hide or show acts on.
   var state = { row: 0, col: {}, arranging: false, held: false, bar: -1, last: null };
+  var BAR = ['btnHide', 'btnReset', 'btnDone'];
   var build = null;
   var okDownAt = 0, okTimer = null, okLong = false;
   var beatFails = 0;
   var layoutRevision = 0, layoutBusy = false;
+  // home.json's version as last loaded: a heartbeat bringing another means it
+  // was changed elsewhere, such as from a dashboard, and the layout is reloaded.
+  var layoutVersion = null;
   var loadRetry = null, wallAvailable = false, initialEscape = false;
   var wallSlots = null, wallRevision = '';
 
@@ -270,6 +278,8 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
     return null;
   }
   function hidden(kind, id) { return layout.hidden[kind].indexOf(id) !== -1; }
+  // The server puts a Last opened row in that order; the view shows it as sent.
+  function byRecent(kind) { return !!(layout.sort && layout.sort[kind] === 'recent'); }
 
   // A row's items in its saved order; arranging shows the hidden ones too.
   function items(kind) {
@@ -281,9 +291,17 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
     return out;
   }
   function rowKey() { return layout.rows[state.row]; }
-  function colOf(kind) { return Math.min(state.col[kind] || 0, Math.max(0, items(kind).length - 1)); }
+  // -1, only while arranging, is the row's Order, left of its first tile.
+  function colOf(kind) {
+    if (state.arranging && state.col[kind] === -1) return -1;
+    return Math.max(0, Math.min(state.col[kind] || 0, items(kind).length - 1));
+  }
 
   // ---------------------------------------------------------------- rows
+
+  function sortLabel(kind) {
+    return byRecent(kind) ? t('home.arrange.orderRecent', 'Order: last opened') : t('home.arrange.orderCustom', 'Order: yours');
+  }
 
   function rowNote(kind, list) {
     if (kind === 'app') return t('home.row.appsNote', '{n} of {total} shown', { n: items('app').length, total: data.order.app.length });
@@ -306,7 +324,8 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
       var tiles = '';
       list.forEach(function (it, i) { tiles += TILE[kind](it, i); });
       html += '<section class="row" data-row="' + ri + '" data-key="' + kind + '">' +
-        '<h2>' + esc(ROW_TITLES[kind]) + '<span>' + esc(rowNote(kind, list)) + '</span></h2>' +
+        '<h2>' + esc(ROW_TITLES[kind]) + '<span>' + esc(rowNote(kind, list)) + '</span>' +
+        '<em class="sort">' + esc(sortLabel(kind)) + '</em></h2>' +
         '<div class="wrap"><div class="track">' + tiles +
         '</div></div></section>';
     });
@@ -356,10 +375,10 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
         var on = active && ci === c;
         tiles[ci].className = tiles[ci].className.replace(/ (focus|held)\b/g, '') + (on ? ' focus' : '') + (on && state.held ? ' held' : '');
       }
+      rowEl.querySelector('.sort').className = 'sort' + (active && c === -1 ? ' focus' : '');
       scrollTrack(rowEl, tiles[c], instant);
     }
-    var btns = ['btnHide', 'btnReset', 'btnDone'];
-    for (var b = 0; b < btns.length; b++) $(btns[b]).className = 'btn' + (state.bar === b ? ' focus' : '');
+    for (var b = 0; b < BAR.length; b++) $(BAR[b]).className = 'btn' + (state.bar === b ? ' focus' : '');
     if (state.bar < 0) {
       var focused = items(rowKey())[colOf(rowKey())];
       state.last = focused ? { kind: rowKey(), id: focused.id } : null;
@@ -369,7 +388,9 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
       ? t('home.arrange.removeChannel', 'Remove channel') : t('home.arrange.hide', 'Hide or show');
     if (state.arranging) {
       var it = items(rowKey())[colOf(rowKey())];
-      $('bannerState').textContent = !it ? t('home.arrange.emptyRow', 'This row is empty')
+      $('bannerState').textContent = colOf(rowKey()) === -1
+          ? t('home.arrange.sortFocus', '{row}: OK changes the order', { row: ROW_TITLES[rowKey()] })
+        : !it ? t('home.arrange.emptyRow', 'This row is empty')
         : state.held ? t('home.arrange.moving', 'Moving {name}', { name: it.title || it.name })
         : (it.title || it.name) + (hidden(rowKey(), it.id) ? ' ' + t('home.arrange.isHidden', '(hidden)') : '');
     }
@@ -378,7 +399,9 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
   // Keeps the focused tile in view by moving the track, not the page.
   function scrollTrack(rowEl, tile, instant) {
     var track = rowEl.querySelector('.track'), wrap = rowEl.querySelector('.wrap');
-    if (!tile || !track) return;
+    if (!track) return;
+    if (!tile) tile = track.querySelector('.tile');
+    if (!tile) return;
     var viewW = wrap.clientWidth - 44;
     var cur = -(parseFloat(track.getAttribute('data-x')) || 0), x = cur;
     if (tile.offsetLeft + tile.offsetWidth > cur + viewW) x = tile.offsetLeft + tile.offsetWidth - viewW;
@@ -499,10 +522,13 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
   }
 
   function move(dr, dc) {
+    var onSort = colOf(rowKey()) === -1;
     if (dr) state.row = Math.max(0, Math.min(layout.rows.length - 1, state.row + dr));
+    // Up and down from a row's Order go to the next row's.
+    if (dr && onSort) state.col[rowKey()] = -1;
     if (dc) {
       var kind = rowKey();
-      state.col[kind] = Math.max(0, Math.min(items(kind).length - 1, colOf(kind) + dc));
+      state.col[kind] = Math.max(state.arranging ? -1 : 0, Math.min(items(kind).length - 1, colOf(kind) + dc));
     }
     applyFocus();
   }
@@ -511,26 +537,35 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
 
   /*
    * Only the rows whose tiles were moved send their order: a row left alone
-   * keeps following its default, the Apps row most-used first.
+   * keeps following its default, the Apps row most-used first. Saved while
+   * arranging (stay), the rows are read again, so a row set to Last opened
+   * shows that order.
    */
   var movedRows = {}, channelsChanged = false;
-  function saveLayout(extra) {
+  function saveLayout(extra, stay, saved) {
     layoutRevision++;
     layoutBusy = true;
     var order = {};
     for (var kind in movedRows) order[kind] = data.order[kind];
-    var body = { rows: layout.rows, order: order, hidden: layout.hidden };
+    var body = { rows: layout.rows, order: order, sort: layout.sort, hidden: layout.hidden };
     if (channelsChanged) body.channels = layout.channels;
     for (var k in extra) body[k] = extra[k];
     postJson('/api/home/layout', body, function (r) {
-      layoutBusy = false;
       layoutRevision++;
-      if (!r || !r.ok || !r.layout) return toast(t('home.arrange.saveFailed', 'Layout could not be saved'));
+      if (!r || !r.ok || !r.layout) {
+        layoutBusy = false;
+        return toast(t('home.arrange.saveFailed', 'Layout could not be saved'));
+      }
       movedRows = {};
       channelsChanged = false;
       layout = r.layout;
-      toast(t('home.arrange.saved', 'Layout saved'), t('home.arrange.savedDesc', 'The dashboard\'s Home tab shows it too'));
-      load();
+      if (!stay) {
+        layoutBusy = false;
+        toast(t('home.arrange.saved', 'Layout saved'), t('home.arrange.savedDesc', 'The dashboard\'s Home tab shows it too'));
+        return load();
+      }
+      // Keep edits blocked until the new order has arrived as well as the save.
+      load(function (loaded) { layoutBusy = false; render(); if (loaded && saved) saved(); }, true);
     });
   }
 
@@ -550,6 +585,39 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
       saveLayout({});
     }
     render();
+  }
+
+  /*
+   * Picking a tile up in a Last opened row puts the row in the order it
+   * shows, to be moved from there.
+   */
+  function pickUp() {
+    var kind = rowKey();
+    if (colOf(kind) === -1) return toggleSort(kind);
+    if (!state.held && items(kind).length && byRecent(kind)) {
+      layout.sort[kind] = 'custom';
+      movedRows[kind] = true;
+      toast(t('home.arrange.nowCustom', '{row} are now in your order', { row: ROW_TITLES[kind] }),
+            t('home.arrange.nowCustomDesc', 'The row\'s Order, left of its first tile, puts them back in last opened order'));
+      render();
+    }
+    state.held = !state.held;
+    applyFocus();
+  }
+
+  // A row's Order: between its own order and last opened.
+  function toggleSort(kind) {
+    if (layoutBusy) return;
+    state.held = false;
+    if (!layout.sort) layout.sort = {};
+    var recent = !byRecent(kind);
+    layout.sort[kind] = recent ? 'recent' : 'custom';
+    saveLayout({}, true, function () {
+      toast(recent ? t('home.arrange.sortedRecent', '{row}: last opened first', { row: ROW_TITLES[kind] })
+                   : t('home.arrange.sortedCustom', '{row}: in your order', { row: ROW_TITLES[kind] }),
+            recent ? t('home.arrange.sortedRecentDesc', 'Each tile moves to the front when it is opened')
+                   : t('home.arrange.sortedCustomDesc', 'Pick a tile up with OK to move it'));
+    });
   }
 
   function shiftTile(dc) {
@@ -612,7 +680,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
   function arrangeKey(k) {
     if (state.bar >= 0) {
       if (k === KEY.left) state.bar = Math.max(0, state.bar - 1);
-      else if (k === KEY.right) state.bar = Math.min(2, state.bar + 1);
+      else if (k === KEY.right) state.bar = Math.min(BAR.length - 1, state.bar + 1);
       else if (k === KEY.up) state.bar = -1;
       else if (k === KEY.ok) return pressBar(state.bar);
       return applyFocus();
@@ -625,7 +693,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
       if (state.row === layout.rows.length - 1) { state.bar = 0; return applyFocus(); }
       return move(1, 0);
     }
-    if (k === KEY.ok) { state.held = !state.held; return applyFocus(); }
+    if (k === KEY.ok) return pickUp();
     if (k === KEY.red) return toggleHidden();
     if (k === KEY.yellow) return resetLayout();
   }
@@ -634,6 +702,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
 
   function onKeyDown(e) {
     if (!data || !layout) return;
+    if (layoutBusy) { e.preventDefault(); return; }
     var k = e.keyCode;
     if (k === KEY.ok) {
       // Acted on at release, unless held: a long press arranges.
@@ -669,7 +738,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
     e.preventDefault();
     clearTimeout(okTimer);
     okDownAt = 0;
-    if (okLong) return;
+    if (okLong || layoutBusy) return;
     if (state.arranging) arrangeKey(KEY.ok);
     else activate();
   }
@@ -683,6 +752,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
     return null;
   }
   function onPointer(e) {
+    if (layoutBusy) return;
     var tile = tileAt(e.target);
     if (!tile || state.held) return;
     var rowEl = tile.parentNode;
@@ -694,13 +764,17 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
     }
   }
   function onClick(e) {
-    if (!data || !layout) return;
+    if (!data || !layout || layoutBusy) return;
     var btn = e.target && e.target.id;
-    if (btn === 'btnHide') return pressBar(0);
-    if (btn === 'btnReset') return pressBar(1);
-    if (btn === 'btnDone') return pressBar(2);
+    if (BAR.indexOf(btn) !== -1) return pressBar(BAR.indexOf(btn));
+    if (state.arranging && /\bsort\b/.test(e.target.className || '')) {
+      var sortRow = e.target.parentNode.parentNode;
+      state.row = +sortRow.getAttribute('data-row');
+      state.col[rowKey()] = -1;
+      return toggleSort(rowKey());
+    }
     if (!tileAt(e.target)) return;
-    if (state.arranging) { state.held = !state.held; applyFocus(); }
+    if (state.arranging) pickUp();
     else activate();
   }
 
@@ -761,7 +835,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
   // ---------------------------------------------------------------- data
 
   function load(cb, whileArranging) {
-    if (layoutBusy || (state.arranging && !whileArranging)) return;
+    if ((layoutBusy || state.arranging) && !whileArranging) return;
     var revision = layoutRevision;
     getJson('/api/home/catalogue', function (r) {
       if (!r || !r.ok) {
@@ -778,10 +852,11 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
         return cb && cb(false);
       }
       // A reply sent before arranging or saving must not replace local edits.
-      if (revision !== layoutRevision || layoutBusy || (state.arranging && !whileArranging)) return;
+      if (revision !== layoutRevision || ((layoutBusy || state.arranging) && !whileArranging)) return;
       var firstLoad = !data;
       data = r;
       layout = r.layout;
+      if (r.layoutVersion) layoutVersion = r.layoutVersion;
       refreshPicture();
       clearTimeout(loadRetry);
       wallAvailable = !!(r.wallpapers && r.wallpapers.available);
@@ -843,6 +918,7 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
           return;
         }
         build = r.build || build;
+        if (r.layoutVersion && layoutVersion && r.layoutVersion !== layoutVersion && !state.arranging && !layoutBusy) load();
         return;
       }
       if (++beatFails === 3) $('fault').className = 'show';
