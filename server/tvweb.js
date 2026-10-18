@@ -958,6 +958,8 @@ if (!CLI_MODE) {
   if (preloadTimer.unref) preloadTimer.unref();
   var keysTimer = setTimeout(function () { remoteKeys.ensure(); }, 60000);
   if (keysTimer.unref) keysTimer.unref();
+  var keysRecheck = setInterval(function () { remoteKeys.recheckNative(); }, remoteKeys.RECHECK_MS);
+  if (keysRecheck.unref) keysRecheck.unref();
 }
 
 if (CLI_MODE) {

@@ -610,6 +610,39 @@ caller) and the app in front. On a CX (webOS 5.6) a key set to open an app
 brought it to the front within two seconds of the press, a key set to nothing
 launched nothing, and a key put back as LG has it left the chain as it was.
 
+### webOS 11: LG's own values
+
+webOS 11 replaces the Qt compositor with a Weston one, and its key filters with
+native libraries (`libappLaunch.so`, `libsystemUI.so`, `libpreProcess.so`)
+named by `com.webos.surfacemanager.keyFiltersCpp`. `/usr/lib/qt5/qml/KeyFilters/`
+is gone, so there is no JavaScript to put first; the old configd key is still
+there, read by nothing. `remotekeys.js` takes this path where the KeyFilters
+directory names no keys and configd has `keyFiltersCpp`.
+
+LG's launch library reads what a key does from two values at every press, so a
+change applies at once with nothing reloaded:
+
+- **Streaming buttons and Apps**: the settings service's `other.mapping_info`,
+  a list of `{ name: { app_id, launch_param, isActive } }` that LG's server
+  sends. A button is offered where its entry is switched on. Opening an app
+  writes `{ app_id, launch_param: null, isActive: true }`; **Nothing** writes
+  LG's entry with `isActive: false`, and LG then shows a toast instead of
+  opening an app.
+- **Guide**: the configd value `com.webos.keyaction.tvGuide`, written as
+  `{ action: "launch", id }`, or `{ action: "ignore", accept: true }` for
+  **Nothing**. On Live TV and the HDMI inputs LG's filter hands Guide to the
+  input, which opens its own guide whatever the value says.
+
+These are LG's values, not Glasshouse's, so what each held before the first
+change is kept in `/var/lib/tvweb/remotekeys-lg.json`, with what Glasshouse last
+wrote over it, and **As LG has it** writes it back. A value found different from
+both is one LG has sent since, and becomes the value to put back. The server
+checks at its start and every 30 minutes, putting a set key back where LG's
+server has replaced the list, and writes nothing while all is in place.
+`tvwebctl restore-keys` writes LG's values back and deletes both files. The
+other keys Glasshouse offers elsewhere (Input, the color keys, Search, Info) are
+not offered: their handling on webOS 11 ignores these values.
+
 ## Older hardware capabilities (webOS 3.x and LCD models)
 
 Testing against 2016 hardware (such as 43UH610V-ZB and 55UH6030-UC on webOS 3.4.3) highlights several differences between older LCD platforms and modern OLED sets:

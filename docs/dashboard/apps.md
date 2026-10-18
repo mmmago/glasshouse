@@ -94,6 +94,8 @@ A change applies straight away, on whatever is on screen, and lasts across reboo
 
 A key set here is taken before any app sees it, so it wins over an app's own use of that key. YouTube uses **Guide** for its own guide, and Live TV and the HDMI inputs use the color keys for their banners and teletext: with such a key set here, those apps no longer get it, whatever is on screen, until the key is **As LG has it** again. There is no per-app setting. How it works is in [Remote keys through the compositor's filter chain](../IMPLEMENTATION.md#remote-keys-through-the-compositors-filter-chain).
 
+On webOS 11 (LG's webOS 26) LG handles keys differently, and only the streaming buttons, Apps and Guide can be changed: Input, the color keys, Search and Info are not listed. A streaming button set to **Nothing** shows LG's short notice instead of opening an app. Guide set here still opens the guide of Live TV or an HDMI input while one is on screen. LG's server can send its list of streaming buttons again; the server sets the keys again within half an hour. How it works is in [webOS 11: LG's own values](../IMPLEMENTATION.md#webos-11-lgs-own-values).
+
 ### Hide home screen system apps
 
 ![Hide home screen system apps switched on, with each built-in LG app as a tile marked hidden or shown](../screenshots/apps-system-apps.png)
