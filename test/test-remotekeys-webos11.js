@@ -99,7 +99,7 @@ function luna(uri, params, cb) {
     toasts.push(uri.split('/')[1]);
   } else if (uri === 'com.webos.applicationManager/getAppInfo') {
     // sam answers a blocked app as it does one it does not have.
-    r.returnValue = params.id === 'amazon.alexa.view' && !tv.blocked[params.id];
+    r.returnValue = (params.id === 'amazon.alexa.view' && !tv.blocked[params.id]) || params.id === 'com.webos.app.quickinputpicker';
   } else if (uri === 'com.webos.applicationManager/blockSystemApp') {
     assert.strictEqual(params.forceBlockSystemApp, false);
     tv.blockCalls++;
@@ -267,6 +267,30 @@ step('when LG sends its list again, the key is set again, and As LG has it keeps
         set('amazon', 'lg', '', function () {
           assert.deepEqual(tv.mapping, resent);
           next();
+        });
+      });
+    });
+  });
+});
+
+step('LG\'s input switcher is a choice of its own, first, for any key', function (next) {
+  var before = copy(tv.mapping);
+  rk.getRemoteKeys(function (r) {
+    assert.deepEqual(r.choices[0], { id: 'com.webos.app.quickinputpicker', title: 'Input switcher', kind: 'switcher' });
+    set('netflix', 'open', 'com.webos.app.quickinputpicker', function () {
+      assert.deepEqual(entry('netflix'), { launch_param: null, app_id: 'com.webos.app.quickinputpicker', isActive: true });
+      set('multikeyhold', 'open', 'com.webos.app.quickinputpicker', function () {
+        assert.deepEqual(tv.custom.customLongPress, { id: 'com.webos.app.quickinputpicker', type: 'app', params: {} });
+        rk.getRemoteKeys(function (r2) {
+          var k = r2.keys.filter(function (x) { return x.key === 'netflix'; })[0];
+          assert.strictEqual(k.opens, 'Input switcher');
+          set('netflix', 'lg', '', function () {
+            set('multikeyhold', 'lg', '', function () {
+              assert.deepEqual(tv.mapping, before);
+              assert.ok(!exists(LG_FILE));
+              next();
+            });
+          });
         });
       });
     });

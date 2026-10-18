@@ -55,6 +55,9 @@ function luna(uri, params, cb) {
     if (params.configs[rk.MAP_KEY]) { tv.keys = JSON.parse(JSON.stringify(params.configs[rk.MAP_KEY])); tv.keysWrites++; }
   } else if (uri === 'com.webos.applicationManager/listApps') {
     r.apps = APPS;
+  } else if (uri === 'com.webos.applicationManager/getAppInfo') {
+    // A CX has no quick input picker, so no input switcher choice.
+    r.returnValue = false;
   }
   process.nextTick(function () { cb(r); });
 }

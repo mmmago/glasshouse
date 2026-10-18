@@ -839,6 +839,10 @@
   "text": "No se pudo cambiar: {error}",
   "from": "Could not change it: {error}"
  },
+ "apps.remoteKeys.inputSwitcher": {
+  "text": "Selector de entradas",
+  "from": "Input switcher"
+ },
  "apps.remoteKeys.inputs": {
   "text": "Entradas",
   "from": "Inputs"
@@ -4718,6 +4722,10 @@
  "srv.remoteKeys.chainFailed": {
   "text": "La TV no aceptó el cambio",
   "from": "The TV did not take the change"
+ },
+ "srv.remoteKeys.inputSwitcher": {
+  "text": "Selector de entradas",
+  "from": "Input switcher"
  },
  "srv.remoteKeys.liveTv": {
   "text": "TV en directo",

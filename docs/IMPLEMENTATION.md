@@ -610,6 +610,11 @@ caller) and the app in front. On a CX (webOS 5.6) a key set to open an app
 brought it to the front within two seconds of the press, a key set to nothing
 launched nothing, and a key put back as LG has it left the chain as it was.
 
+A key can also open LG's input switcher, `com.webos.app.quickinputpicker`,
+offered as a choice of its own (`kind: "switcher"`) where `getAppInfo` finds
+it. Launched with no parameters it shows the list the Input and ? buttons
+open on a C5 (webOS 11.2.0), so every way a key opens an app opens it too.
+
 ### webOS 11: LG's own values
 
 webOS 11 replaces the Qt compositor with a Weston one, and its key filters with

@@ -88,6 +88,10 @@ var HANDLER = 'handleGlasshouseKeys';
  */
 var HOLD_LIMIT_MS = 90000;
 var LIVE_TV = 'com.webos.app.livetv';
+// LG's input switcher, as the remote's Input and ? buttons open it (a C5,
+// webOS 11.2.0): a choice of its own where the TV has it. Launched with no
+// parameters it shows the same list.
+var INPUT_SWITCHER = 'com.webos.app.quickinputpicker';
 var APP_PREFIX = 'com.webos.app.';
 
 // webOS 11's native key filters; see the header.
@@ -174,6 +178,7 @@ var stateDir = '/var/lib/tvweb';
 var filtersDir = LG_FILTERS_DIR;
 var tvKeys = null;      // the symbols this TV's filters name, read once
 var nativeFilters = null; // whether configd names native filters, once answered
+var switcherFound = null; // whether the TV has INPUT_SWITCHER, once answered
 var SubscriptionCtor = null; // luna.Subscription, to follow LG's settings
 /** @type {typeof import('./services') | null} */
 var servicesModule = null;  // to switch LG's voice assistant off and on
@@ -188,6 +193,7 @@ function init(opts) {
   filtersDir = opts.filtersDir || LG_FILTERS_DIR;
   tvKeys = null;
   nativeFilters = null;
+  switcherFound = null;
   watchLg(false);
   reapplied = [];
   SubscriptionCtor = opts.subscription || null;
@@ -1046,6 +1052,19 @@ function inputChoices() {
   return out;
 }
 
+// LG's input switcher as a choice, where the TV has it: cb([choice]) or cb([]).
+function switcherChoices(cb) {
+  var choice = function () {
+    return switcherFound ? [{ id: INPUT_SWITCHER, title: msg('srv.remoteKeys.inputSwitcher', 'Input switcher'), kind: 'switcher' }] : [];
+  };
+  if (switcherFound !== null) return cb(choice());
+  lunaFn('com.webos.applicationManager/getAppInfo', { id: INPUT_SWITCHER }, function (r) {
+    // An answer either way is kept; no answer is asked again.
+    if (r) switcherFound = !!r.returnValue;
+    cb(choice());
+  });
+}
+
 // The apps a key can open: those on the Home screen, by title.
 function appChoices(apps) {
   var seen = {};
@@ -1082,40 +1101,43 @@ function getRemoteKeys(cb) {
 }
 
 function describeKeys(keys, inChain, cb, native) {
-  listApps(function (apps) {
-    var map = readMap();
-    var titles = {};
-    (apps || []).forEach(function (a) { if (a && a.id) titles[a.id] = a.title || a.id; });
-    var inputs = inputChoices();
-    var cc = country();
-    inputs.forEach(function (c) { titles[c.id] = c.title; });
-    var out = keys.map(function (k) {
-      var set = Object.prototype.hasOwnProperty.call(map, k.key);
-      var id = set ? map[k.key] : null;
-      var key = {
-        key: k.key,
-        title: k.title,
-        action: !set ? 'lg' : (id ? 'open' : 'nothing'),
-        id: id || '',
-        opens: id ? (titles[id] || id) : '',
-        elsewhere: !!(cc && k.regions && k.regions.indexOf(cc) === -1)
-      };
-      if (k.noNothing) key.noNothing = true;
-      if (k.turnsOffVoice) key.turnsOffVoice = true;
-      if (native && NATIVE_BLOCK_KEYS[k.key]) key.blocksApp = true;
-      return key;
-    });
-    cb({
-      ok: true, supported: true, keys: out,
-      choices: inputs.concat(appChoices(apps)),
-      inChain: inChain
+  switcherChoices(function (switchers) {
+    listApps(function (apps) {
+      var map = readMap();
+      var titles = {};
+      (apps || []).forEach(function (a) { if (a && a.id) titles[a.id] = a.title || a.id; });
+      var inputs = inputChoices();
+      var cc = country();
+      switchers.concat(inputs).forEach(function (c) { titles[c.id] = c.title; });
+      var out = keys.map(function (k) {
+        var set = Object.prototype.hasOwnProperty.call(map, k.key);
+        var id = set ? map[k.key] : null;
+        var key = {
+          key: k.key,
+          title: k.title,
+          action: !set ? 'lg' : (id ? 'open' : 'nothing'),
+          id: id || '',
+          opens: id ? (titles[id] || id) : '',
+          elsewhere: !!(cc && k.regions && k.regions.indexOf(cc) === -1)
+        };
+        if (k.noNothing) key.noNothing = true;
+        if (k.turnsOffVoice) key.turnsOffVoice = true;
+        if (native && NATIVE_BLOCK_KEYS[k.key]) key.blocksApp = true;
+        return key;
+      });
+      cb({
+        ok: true, supported: true, keys: out,
+        choices: switchers.concat(inputs, appChoices(apps)),
+        inChain: inChain
+      });
     });
   });
 }
 
 /*
  * Sets a key: action 'lg' puts it back as LG has it, 'nothing' makes it do
- * nothing, 'open' opens id, an input or an app on the Home screen. It takes
+ * nothing, 'open' opens id, an input, an app on the Home screen or LG's input
+ * switcher. It takes
  * effect at once, through the filter's configd subscription or, on webOS 11,
  * LG's own values. cb({ ok, error }).
  */
@@ -1142,12 +1164,14 @@ function setOfferedKey(def, action, id, cb) {
     return save(map, cb);
   }
   if (action !== 'open' || !id) return cb({ ok: false, error: 'lg, nothing or open expected' });
-  listApps(function (apps) {
-    if (!apps) return cb({ ok: false, error: msg('srv.remoteKeys.noApps', 'Could not read the TV\'s apps. Try again in a moment.') });
-    var allowed = inputChoices().concat(appChoices(apps)).some(function (c) { return c.id === id; });
-    if (!allowed) return cb({ ok: false, error: msg('srv.remoteKeys.unknownApp', 'That app is not on this TV') });
-    map[def.key] = id;
-    save(map, cb);
+  switcherChoices(function (switchers) {
+    listApps(function (apps) {
+      if (!apps) return cb({ ok: false, error: msg('srv.remoteKeys.noApps', 'Could not read the TV\'s apps. Try again in a moment.') });
+      var allowed = switchers.concat(inputChoices(), appChoices(apps)).some(function (c) { return c.id === id; });
+      if (!allowed) return cb({ ok: false, error: msg('srv.remoteKeys.unknownApp', 'That app is not on this TV') });
+      map[def.key] = id;
+      save(map, cb);
+    });
   });
 }
 
