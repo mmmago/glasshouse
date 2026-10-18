@@ -688,6 +688,23 @@ app in front. Remote Keys puts its own filter first.
   still logged as `NL_BUTTON_CLICK` and nothing started the service again; an
   app launched from that log line was in front 0.6 to 1 s after the press,
   with nothing of LG's on screen, before and after a switch off and on.
+- **The Alexa button goes to Amazon's adapter.** `libappLaunch.so` names
+  `amazon.alexa.adapter.plugin` and `cb_launchAlexaHotkey`; the adapter, a
+  dynamic service (`Type=dynamic`, run through `jailer`), showed "Amazon Alexa
+  est en cours de chargement" 1 to 1.5 s after the press and launched
+  `amazon.alexa.view` 2.5 s after it, then the terms, with `voiceconductor`
+  stopped as well as running. With the view blocked by
+  `blockSystemApp { id, forceBlockSystemApp: false }`, sam logged the launch
+  and nothing opened; `getAppInfo` on a blocked app returns `returnValue:
+  false`, a second block `errorCode` 1 "already blocked: <id>", and a release
+  of an app not blocked `returnValue: true`. The adapter launched the view up
+  to 13 s after a press.
+- **Toasts can be refused, not closed.** `notification/closeToast` with a
+  toast's id returned true and the toast stayed its 5 s. After
+  `notification/disable` (`exceptions` optional), `createToast` was answered
+  "Toast is blocked by [<caller>]" and nothing was shown, then or after
+  `enable`. A subscriber to `getToastNotification` gets each toast with its
+  `sourceId`.
 - **`mapping_info` is written back at each switch off and on.** At Active
   Standby, 60 ms after `NL_POWER_STATE`, and twice more on power-on, the
   settings service's subscribers got LG's entries again, from the copy kept

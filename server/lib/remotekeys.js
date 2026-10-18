@@ -71,9 +71,8 @@
  */
 var fs = require('fs');
 var path = require('path');
-var childProcess = require('child_process');
-var children = require('./children');
 var msg = require('./say').msg;
+var allocBuffer = require('./util').allocBuffer;
 
 var CONFIG_KEY = 'com.webos.surfacemanager.keyFilters';
 // What each key does, read by the filter; see the header.
@@ -108,7 +107,15 @@ var NATIVE_SETTINGS = { multikey: 'customShortPress', multikeyhold: 'customLongP
  * app opened 0.7 s after the press and nothing else did.
  */
 var NATIVE_SERVICE_KEYS = { ai: 'voiceconductor' };
-var AI_PRESS = /NL_BUTTON_CLICK\b.*"button_type"\s*:\s*"KEY_VOICE"/;
+/*
+ * Keys whose press LG hands to an app's own service, by the app it opens. The
+ * Alexa button goes to Amazon's adapter, which the hub starts on demand and
+ * which opens amazon.alexa.view and its terms, whether or not voiceconductor
+ * runs (a C5, webOS 11.2.0). With the view blocked through blockSystemApp it
+ * no longer opens; the adapter's "Amazon Alexa is loading" toast still shows
+ * for 5 s, and closeToast does not shorten it. Answered from the log too.
+ */
+var NATIVE_BLOCK_KEYS = { alexa: 'amazon.alexa.view' };
 var MESSAGES_LOG = '/var/log/messages';
 var OTHER_CATEGORY = 'other';
 var MAPPING_KEY = 'mapping_info';
@@ -170,7 +177,6 @@ var nativeFilters = null; // whether configd names native filters, once answered
 var SubscriptionCtor = null; // luna.Subscription, to follow LG's settings
 /** @type {typeof import('./services') | null} */
 var servicesModule = null;  // to switch LG's voice assistant off and on
-var spawnFn = childProcess.spawn;
 var messagesPath = MESSAGES_LOG;
 var reapplyDelayMs = 1000;
 
@@ -185,14 +191,16 @@ function init(opts) {
   watchLg(false);
   reapplied = [];
   SubscriptionCtor = opts.subscription || null;
-  followAi(undefined);
+  followPresses({});
+  if (toastsTimer) { clearTimeout(toastsTimer); toastsTimer = null; }
   servicesModule = opts.services || null;
-  spawnFn = opts.spawn || childProcess.spawn;
   messagesPath = opts.messagesPath || MESSAGES_LOG;
   if (typeof opts.reapplyDelayMs === 'number') reapplyDelayMs = opts.reapplyDelayMs;
+  muteToastsMs = opts.muteToastsMs || 0;
   powerTimers.forEach(function (t) { clearTimeout(t); });
   powerTimers = [];
   powerRechecksMs = opts.powerRechecksMs || POWER_RECHECKS_MS;
+  if (lunaFn && fs.existsSync(toastsMarker())) unmuteToasts();
 }
 
 // The TV's country as privacy.js learns it, or '' before it has.
@@ -489,8 +497,9 @@ function hasNativeFilters(cb) {
 // LG's values as they were before Glasshouse changed them, and what it last
 // wrote over each, by kind: mapping (the streaming buttons), actions (configd
 // key actions) and settings (the ? button), each beside its ...Written.
-// services holds each of LG's services Glasshouse has switched off, as true.
-var LG_KINDS = ['mapping', 'actions', 'settings', 'services'];
+// services holds each of LG's services Glasshouse has switched off, and
+// blocks each app it has blocked, as true.
+var LG_KINDS = ['mapping', 'actions', 'settings', 'services', 'blocks'];
 
 function readLg() {
   var out = {};
@@ -576,10 +585,26 @@ function readNative(cb) {
   readMapping(function (list) {
     readActions(function (actions) {
       readSettings(function (settings) {
-        cb({ list: list, actions: actions, settings: settings });
+        readBlockable(function (apps) {
+          cb({ list: list, actions: actions, settings: settings, apps: apps });
+        });
       });
     });
   });
+}
+
+// Which of the apps NATIVE_BLOCK_KEYS names the TV has, by id. A blocked app is
+// not found, so lg.blocks counts as well where it is read.
+function readBlockable(cb) {
+  var ids = Object.keys(NATIVE_BLOCK_KEYS).map(function (k) { return NATIVE_BLOCK_KEYS[k]; });
+  var out = {};
+  (function next(i) {
+    if (i === ids.length) return cb(out);
+    lunaFn('com.webos.applicationManager/getAppInfo', { id: ids[i] }, function (r) {
+      if (r && r.returnValue) out[ids[i]] = true;
+      next(i + 1);
+    });
+  })(0);
 }
 
 // The entry for a streaming button in LG's list, or undefined.
@@ -600,6 +625,7 @@ function nativeKeys(tv, lg) {
     if (NATIVE_ACTIONS[k.key]) return !!(tv.actions && tv.actions[NATIVE_ACTIONS[k.key]]);
     if (NATIVE_SETTINGS[k.key]) return !!(tv.settings && tv.settings[NATIVE_SETTINGS[k.key]]);
     if (NATIVE_SERVICE_KEYS[k.key]) return !!(servicesModule && servicesModule.available(NATIVE_SERVICE_KEYS[k.key]));
+    if (NATIVE_BLOCK_KEYS[k.key]) return !!((tv.apps && tv.apps[NATIVE_BLOCK_KEYS[k.key]]) || lg.blocks[NATIVE_BLOCK_KEYS[k.key]]);
     if (k.nativeOnly) return false;
     var entry = lg.mapping[k.key] || mappingEntry(tv.list, k.key);
     return !!(entry && typeof entry === 'object' && entry.isActive !== false);
@@ -679,7 +705,7 @@ function applyNativeNow(cb, mapOverride) {
   var lg = readLg();
   if (!Object.keys(map).length && !lgHolds(lg)) {
     watchLg(false);
-    followAi(undefined);
+    followPresses({});
     return cb(true, false);
   }
   readNative(function (tv) {
@@ -715,16 +741,19 @@ function applyNativeNow(cb, mapOverride) {
     var wrote = Object.keys(settings).length > 0 || Object.keys(configs).length > 0;
     var finish = function (ok) {
       if (!ok) return cb(false, wrote);
-      switchServices(map, lg, function (okServices, switched) {
-        try {
-          writeLg(lg);
-        } catch (e) {
-          console.log('remotekeys: could not write ' + lgFile() + ': ' + e.message);
-          return cb(false, wrote || switched);
-        }
-        watchLg(lgHolds(lg, ['mapping', 'settings']));
-        followAi(Object.prototype.hasOwnProperty.call(map, 'ai') && lg.services.voiceconductor ? map.ai : undefined);
-        cb(okServices, wrote || switched);
+      switchServices(map, lg, function (okServices, switchedServices) {
+        switchBlocks(map, lg, function (okBlocks, switchedBlocks) {
+          var switched = switchedServices || switchedBlocks;
+          try {
+            writeLg(lg);
+          } catch (e) {
+            console.log('remotekeys: could not write ' + lgFile() + ': ' + e.message);
+            return cb(false, wrote || switched);
+          }
+          watchLg(lgHolds(lg, ['mapping', 'settings']));
+          followPresses(loggedTargets(map, lg));
+          cb(okServices && okBlocks, wrote || switched);
+        });
       });
     };
     var writeActions = function () {
@@ -773,72 +802,180 @@ function switchServices(map, lg, cb) {
 }
 
 /*
- * The AI button's press, answered from the system log while it is set: the id
- * it opens, '' for nothing, undefined while it is LG's and nothing follows the
- * log. busybox tail -F carries on across the log's rotation.
+ * Blocks each app a set key needs kept from opening, and releases each one
+ * Glasshouse blocked that no set key needs now. A block already in place is
+ * answered "already blocked", which is as good. cb(ok, switched).
  */
-var aiTarget;
-var aiFollower = null;
-var aiFollowerRetry = null;
-var lastAiPress = 0;
-var AI_DEBOUNCE_MS = 500;
+function switchBlocks(map, lg, cb) {
+  var todo = [];
+  Object.keys(NATIVE_BLOCK_KEYS).forEach(function (key) {
+    var id = NATIVE_BLOCK_KEYS[key];
+    var wanted = Object.prototype.hasOwnProperty.call(map, key);
+    if (wanted) todo.push({ id: id, block: true, was: !!lg.blocks[id] });
+    else if (lg.blocks[id]) todo.push({ id: id, block: false, was: true });
+  });
+  if (!todo.length) return cb(true, false);
+  var ok = true, switched = false;
+  (function next(i) {
+    if (i === todo.length) return cb(ok, switched);
+    var job = todo[i];
+    // webOS 11's sam requires forceBlockSystemApp; the release takes the id alone.
+    var uri = job.block ? 'com.webos.applicationManager/blockSystemApp' : 'com.webos.applicationManager/releaseBlockSystemApp';
+    var params = job.block ? { id: job.id, forceBlockSystemApp: false } : { id: job.id };
+    // sam answers a second block "already blocked: <id>" (a C5, 11.2.0).
+    lunaFn(uri, params, function (r, raw) {
+      var done = !!(r && r.returnValue) || /already\s*blocked/i.test(String((r && r.errorText) || raw || ''));
+      if (done) {
+        if (job.block) lg.blocks[job.id] = true;
+        else delete lg.blocks[job.id];
+        if (job.block !== job.was) {
+          switched = true;
+          console.log('remotekeys: ' + job.id + (job.block ? ' blocked' : ' released'));
+        }
+      } else {
+        ok = false;
+      }
+      next(i + 1);
+    });
+  })(0);
+}
 
-function followAi(target) {
-  aiTarget = target;
-  if (target !== undefined) {
-    if (!aiFollower && !aiFollowerRetry) startAiFollower();
-    return;
+/*
+ * Presses answered from the system log, by lginput2's button name: the id the
+ * key opens, or '' for nothing. A key is answered there only while what LG
+ * does with it is off, and nothing follows the log while none is. The log is
+ * read here rather than by a tail child, which the watchdog's restart would
+ * leave running: its size is polled, and only what was added is read. A log
+ * found smaller, or another file, is read from its start.
+ */
+var LOGGED_BUTTONS = { ai: 'KEY_VOICE', alexa: 'KEY_ALEXAVOICE' };
+var BUTTON_CLICK = /NL_BUTTON_CLICK\b.*"button_type"\s*:\s*"([A-Z0-9_]+)"/;
+var PRESS_DEBOUNCE_MS = 500;
+var POLL_MS = 200;
+// One read at most this much, as the syslog forwarder's: a log that has grown
+// a lot is skipped ahead rather than read whole.
+var READ_CHUNK = 64 * 1024;
+var pressTargets = {};
+var following = false;
+var logOffset = 0;
+var logIno = null;
+var reading = false;
+var partialLine = '';
+var lastPress = {};
+
+/*
+ * Amazon's adapter still shows "Amazon Alexa is loading" a second after the
+ * press, for 5 s, and closeToast does not shorten it. So toasts are switched
+ * off for a few seconds from the press: the notification service then refuses
+ * a new one ("Toast is blocked"), rather than showing it later (a C5, 11.2.0).
+ * A toast anything else sends in that time is refused too. While they are
+ * off a marker file says so, and init() switches them back on from it, so a
+ * restart in between does not leave toasts off.
+ */
+var MUTE_TOASTS_MS = { KEY_ALEXAVOICE: 4000 };
+var toastsTimer = null;
+var muteToastsMs = 0;      // for tests: the time toasts stay off, in place of the above
+
+function toastsMarker() { return path.join(stateDir, 'remotekeys-toasts-off'); }
+
+function muteToasts(ms) {
+  if (!lunaFn) return;
+  if (toastsTimer) clearTimeout(toastsTimer);
+  else {
+    try { fs.writeFileSync(toastsMarker(), '', 'utf8'); } catch (e) {}
+    lunaFn('com.webos.notification/disable', {}, function () {});
   }
-  if (aiFollowerRetry) { clearTimeout(aiFollowerRetry); aiFollowerRetry = null; }
-  if (aiFollower) {
-    var child = aiFollower;
-    aiFollower = null;
-    try { child.kill(); } catch (e) {}
+  toastsTimer = setTimeout(unmuteToasts, ms);
+}
+
+function unmuteToasts() {
+  toastsTimer = null;
+  lunaFn('com.webos.notification/enable', {}, function (r) {
+    if (r && r.returnValue) {
+      try { fs.unlinkSync(toastsMarker()); } catch (e) {}
+    } else {
+      console.log('remotekeys: toasts could not be switched back on; trying again');
+      toastsTimer = setTimeout(unmuteToasts, 5000);
+    }
+  });
+}
+
+// The buttons to answer, from what is set and what LG's side has off.
+function loggedTargets(map, lg) {
+  var targets = {};
+  Object.keys(LOGGED_BUTTONS).forEach(function (key) {
+    if (!Object.prototype.hasOwnProperty.call(map, key)) return;
+    var off = (NATIVE_SERVICE_KEYS[key] && lg.services[NATIVE_SERVICE_KEYS[key]]) ||
+      (NATIVE_BLOCK_KEYS[key] && lg.blocks[NATIVE_BLOCK_KEYS[key]]);
+    if (off) targets[LOGGED_BUTTONS[key]] = map[key];
+  });
+  return targets;
+}
+
+function followPresses(targets) {
+  pressTargets = targets || {};
+  var wanted = Object.keys(pressTargets).length > 0;
+  if (wanted && !following) {
+    following = true;
+    // From the end: a press logged before the key was set is not answered.
+    try {
+      var st = fs.statSync(messagesPath);
+      logOffset = st.size;
+      logIno = st.ino;
+    } catch (e) {
+      logOffset = 0;
+      logIno = null;
+    }
+    partialLine = '';
+    fs.watchFile(messagesPath, { interval: POLL_MS, persistent: false }, logChanged);
+  } else if (!wanted && following) {
+    following = false;
+    fs.unwatchFile(messagesPath, logChanged);
   }
 }
 
-function startAiFollower() {
-  children.launch(function () {
-    if (aiTarget === undefined || aiFollower) return;
-    var child;
-    try {
-      child = spawnFn('tail', ['-F', '-n', '0', messagesPath]);
-    } catch (e) {
-      console.log('remotekeys: could not follow ' + messagesPath + ': ' + e.message);
-      return retryAiFollower();
-    }
-    aiFollower = child;
-    var buffered = '';
-    child.stdout.on('data', function (chunk) {
-      buffered += String(chunk);
-      var lines = buffered.split('\n');
-      buffered = lines.pop();
-      lines.forEach(function (line) { if (AI_PRESS.test(line)) aiPressed(); });
-    });
-    child.on('error', function () {});
-    child.on('close', function () {
-      if (aiFollower !== child) return;
-      aiFollower = null;
-      retryAiFollower();
+function logChanged(cur) {
+  if (!following || reading || !cur) return;
+  if ((logIno !== null && cur.ino !== logIno) || cur.size < logOffset) {
+    logOffset = 0;
+    partialLine = '';
+  }
+  logIno = cur.ino;
+  if (cur.size <= logOffset) return;
+  var start = Math.max(logOffset, cur.size - READ_CHUNK);
+  var length = cur.size - start;
+  // A line cut by the last read goes on only where this one carries on from it.
+  var carried = start === logOffset ? partialLine : '';
+  reading = true;
+  fs.open(messagesPath, 'r', function (err, fd) {
+    if (err) { reading = false; return; }
+    var buf = allocBuffer(length);
+    fs.read(fd, buf, 0, length, start, function (err2, bytes) {
+      fs.close(fd, function () {});
+      reading = false;
+      if (err2 || !bytes) return;
+      logOffset = start + bytes;
+      var lines = (carried + buf.toString('utf8', 0, bytes)).split('\n');
+      partialLine = lines.pop();
+      lines.forEach(function (line) {
+        var m = BUTTON_CLICK.exec(line);
+        if (m) buttonPressed(m[1]);
+      });
     });
   });
 }
 
-function retryAiFollower() {
-  if (aiTarget === undefined || aiFollowerRetry) return;
-  aiFollowerRetry = setTimeout(function () {
-    aiFollowerRetry = null;
-    if (aiTarget !== undefined) startAiFollower();
-  }, 5000);
-}
-
-function aiPressed() {
+// lginput2 logs a press once; a second within half a second is the same one.
+function buttonPressed(button) {
+  if (!Object.prototype.hasOwnProperty.call(pressTargets, button)) return;
   var now = Date.now();
-  if (now >= lastAiPress && now - lastAiPress < AI_DEBOUNCE_MS) return;
-  lastAiPress = now;
-  if (!aiTarget || !lunaFn) return;
-  lunaFn('com.webos.applicationManager/launch', { id: aiTarget }, function (r) {
-    if (!(r && r.returnValue)) console.log('remotekeys: the AI button could not open ' + aiTarget);
+  if (now >= (lastPress[button] || 0) && now - (lastPress[button] || 0) < PRESS_DEBOUNCE_MS) return;
+  lastPress[button] = now;
+  if (MUTE_TOASTS_MS[button]) muteToasts(muteToastsMs || MUTE_TOASTS_MS[button]);
+  var id = pressTargets[button];
+  if (!id || !lunaFn) return;
+  lunaFn('com.webos.applicationManager/launch', { id: id }, function (r) {
+    if (!(r && r.returnValue)) console.log('remotekeys: ' + button + ' could not open ' + id);
   });
 }
 
@@ -936,7 +1073,7 @@ function getRemoteKeys(cb) {
   if (!lunaFn) return cb({ ok: true, supported: false });
   offeredKeys(function (keys, kind) {
     if (!keys) return cb({ ok: true, supported: false });
-    if (kind === 'native') return describeKeys(keys, false, cb);
+    if (kind === 'native') return describeKeys(keys, false, cb, true);
     readChain(function (list) {
       if (!list) return cb({ ok: true, supported: false });
       describeKeys(keys, list.some(ours), cb);
@@ -944,7 +1081,7 @@ function getRemoteKeys(cb) {
   });
 }
 
-function describeKeys(keys, inChain, cb) {
+function describeKeys(keys, inChain, cb, native) {
   listApps(function (apps) {
     var map = readMap();
     var titles = {};
@@ -965,6 +1102,7 @@ function describeKeys(keys, inChain, cb) {
       };
       if (k.noNothing) key.noNothing = true;
       if (k.turnsOffVoice) key.turnsOffVoice = true;
+      if (native && NATIVE_BLOCK_KEYS[k.key]) key.blocksApp = true;
       return key;
     });
     cb({
@@ -1158,6 +1296,7 @@ module.exports = {
   ensure: ensure,
   recheckNative: recheckNative,
   powerChanged: powerChanged,
+  isFollowingLog: function () { return following; },
   RECHECK_MS: RECHECK_MS,
   restore: restore,
   filterSource: filterSource,

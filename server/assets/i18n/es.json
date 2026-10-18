@@ -807,6 +807,10 @@
   "text": "Como lo tiene LG",
   "from": "As LG has it"
  },
+ "apps.remoteKeys.blocksAlexa": {
+  "text": "Configurar esta tecla impide que Alexa se abra hasta que vuelva a estar como LG la tiene. Amazon sigue mostrando durante unos segundos que Alexa se está cargando.",
+  "from": "Setting this key stops Alexa from opening until it is As LG has it again. Amazon still shows that Alexa is loading for a few seconds."
+ },
  "apps.remoteKeys.close": {
   "text": "Cerrar",
   "from": "Close"

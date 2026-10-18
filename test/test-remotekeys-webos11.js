@@ -62,6 +62,8 @@ function freshTv() {
     },
     mappingWrites: 0,
     customWrites: 0,
+    blocked: {},
+    blockCalls: 0,
     configWrites: []
   };
 }
@@ -93,6 +95,19 @@ function luna(uri, params, cb) {
     r.apps = APPS;
   } else if (uri === 'com.webos.applicationManager/launch') {
     launched.push(params.id);
+  } else if (uri === 'com.webos.notification/disable' || uri === 'com.webos.notification/enable') {
+    toasts.push(uri.split('/')[1]);
+  } else if (uri === 'com.webos.applicationManager/getAppInfo') {
+    // sam answers a blocked app as it does one it does not have.
+    r.returnValue = params.id === 'amazon.alexa.view' && !tv.blocked[params.id];
+  } else if (uri === 'com.webos.applicationManager/blockSystemApp') {
+    assert.strictEqual(params.forceBlockSystemApp, false);
+    tv.blockCalls++;
+    // As a C5 on 11.2.0 answers a second block.
+    if (tv.blocked[params.id]) { r.returnValue = false; r.errorCode = 1; r.errorText = 'already blocked: ' + params.id; }
+    tv.blocked[params.id] = true;
+  } else if (uri === 'com.webos.applicationManager/releaseBlockSystemApp') {
+    delete tv.blocked[params.id];
   } else {
     throw new Error('unexpected call ' + uri);
   }
@@ -100,6 +115,7 @@ function luna(uri, params, cb) {
 }
 
 var launched = [];
+var toasts = [];
 
 // lib/services.js as the TV has it: the voice assistant there and running.
 var voice = { off: false, switches: [] };
@@ -113,23 +129,14 @@ var servicesMock = {
   }
 };
 
-// tail -F on the system log: each follower started, with its arguments, so a
-// test can hand it lines as lginput2 would write them.
-var followers = [];
-function spawnMock(cmd, args) {
-  var listeners = { data: [], close: [] };
-  var child = {
-    cmd: cmd, args: args, killed: false,
-    stdout: { on: function (ev, fn) { if (ev === 'data') listeners.data.push(fn); } },
-    on: function (ev, fn) { if (ev === 'close') listeners.close.push(fn); },
-    kill: function () { child.killed = true; },
-    write: function (text) { listeners.data.forEach(function (fn) { fn(text); }); }
-  };
-  followers.push(child);
-  return child;
-}
-function liveFollowers() { return followers.filter(function (f) { return !f.killed; }); }
+// The system log, as lginput2 writes to it.
+var LOG = path.join(dir, 'messages');
+fs.writeFileSync(LOG, 'boot\n');
+function logLine(text) { fs.appendFileSync(LOG, text); }
+// The follower polls every 200 ms.
+var POLLED = 500;
 var AI_LINE = '2026-10-18T11:37:06.284Z [60] user.info lginput2 [] lginput2 NL_BUTTON_CLICK {"remote_type":"LGE MR25GA","button_type":"KEY_VOICE"} \n';
+var ALEXA_LINE = '2026-10-18T11:59:12.600Z [60] user.info lginput2 [] lginput2 NL_BUTTON_CLICK {"remote_type":"LGE MR25GA","button_type":"KEY_ALEXAVOICE"} \n';
 var NETFLIX_LINE = '2026-10-18T11:37:09.100Z [60] user.info lginput2 [] lginput2 NL_BUTTON_CLICK {"remote_type":"LGE MR25GA","button_type":"KEY_NETFLIX"} \n';
 
 // The settings service subscription, as luna.Subscription: its handler is kept
@@ -144,7 +151,7 @@ Subscription.prototype.stop = function () { this.running = false; };
 function liveSubs() { return subs.filter(function (x) { return x.running; }); }
 
 // No KeyFilters directory, as on the TV.
-var initOpts = { luna: luna, subscription: Subscription, services: servicesMock, spawn: spawnMock, messagesPath: '/var/log/messages', reapplyDelayMs: 5, powerRechecksMs: [30, 120], inputNames: { hdmi2: 'Apple TV' }, stateDir: stateDir, filtersDir: path.join(dir, 'KeyFilters') };
+var initOpts = { luna: luna, subscription: Subscription, services: servicesMock, messagesPath: LOG, reapplyDelayMs: 5, muteToastsMs: 100, powerRechecksMs: [30, 120], inputNames: { hdmi2: 'Apple TV' }, stateDir: stateDir, filtersDir: path.join(dir, 'KeyFilters') };
 rk.init(initOpts);
 
 function exists(p) { try { fs.statSync(p); return true; } catch (e) { return false; } }
@@ -176,7 +183,8 @@ step('offers Guide and the streaming buttons LG has switched on, with no filter 
     assert.ok(r.supported);
     assert.strictEqual(r.inChain, false);
     var keys = r.keys.map(function (k) { return k.key; });
-    assert.deepEqual(keys, ['netflix', 'amazon', 'disneyplus', 'hulu', 'apps', 'homehub', 'ai', 'multikey', 'multikeyhold', 'guide']);
+    assert.deepEqual(keys, ['netflix', 'amazon', 'disneyplus', 'hulu', 'alexa', 'apps', 'homehub', 'ai', 'multikey', 'multikeyhold', 'guide']);
+    assert.strictEqual(r.keys.filter(function (k) { return k.key === 'alexa'; })[0].blocksApp, true);
     assert.strictEqual(r.keys.filter(function (k) { return k.key === 'ai'; })[0].turnsOffVoice, true);
     var multi = r.keys.filter(function (k) { return k.key === 'multikey'; })[0];
     assert.strictEqual(multi.noNothing, true);
@@ -360,38 +368,94 @@ step('the AI button set switches LG\'s voice assistant off and opens its app fro
   set('ai', 'open', 'youtube.leanback.v4', function () {
     assert.deepEqual(voice.switches, [true]);
     assert.ok(JSON.parse(fs.readFileSync(LG_FILE, 'utf8')).services.voiceconductor);
-    // The follower starts on the children module's turn.
+    assert.ok(rk.isFollowingLog());
+    launched = [];
+    // A line split across two polls, and another button's.
+    logLine(AI_LINE.slice(0, 40));
     setTimeout(function () {
-      var live = liveFollowers();
-      assert.strictEqual(live.length, 1);
-      assert.deepEqual([live[0].cmd].concat(live[0].args), ['tail', '-F', '-n', '0', '/var/log/messages']);
-      launched = [];
-      // A line split across two reads, and another button's.
-      live[0].write(AI_LINE.slice(0, 40));
-      live[0].write(AI_LINE.slice(40) + NETFLIX_LINE);
+      logLine(AI_LINE.slice(40) + NETFLIX_LINE);
       // lginput2 logs each press once; a second within half a second is the same one.
-      live[0].write(AI_LINE);
+      logLine(AI_LINE);
       setTimeout(function () {
         assert.deepEqual(launched, ['youtube.leanback.v4']);
         set('ai', 'nothing', '', function () {
           assert.deepEqual(voice.switches, [true]);
           launched = [];
+          logLine(AI_LINE);
           setTimeout(function () {
-            liveFollowers()[0].write(AI_LINE);
-            setTimeout(function () {
-              assert.deepEqual(launched, []);
-              set('ai', 'lg', '', function () {
-                assert.deepEqual(voice.switches, [true, false]);
-                assert.strictEqual(liveFollowers().length, 0);
-                assert.ok(!exists(LG_FILE));
-                next();
-              });
-            }, 20);
-          }, 600);
+            assert.deepEqual(launched, []);
+            // The log replaced by a smaller one, as at rotation: read from its start.
+            set('ai', 'open', 'netflix', function () {
+              fs.writeFileSync(LOG, AI_LINE);
+              setTimeout(function () {
+                assert.deepEqual(launched, ['netflix']);
+                set('ai', 'lg', '', function () {
+                  assert.deepEqual(voice.switches, [true, false]);
+                  assert.ok(!rk.isFollowingLog());
+                  assert.ok(!exists(LG_FILE));
+                  next();
+                });
+              }, POLLED);
+            });
+          }, POLLED + 200);
         });
-      }, 20);
-    }, 400);
+      }, POLLED);
+    }, POLLED);
   });
+});
+
+step('the Alexa button set blocks Amazon\'s view and opens its app from the log, apart from the AI button; As LG has it releases it', function (next) {
+  voice.switches = [];
+  set('alexa', 'open', 'com.webos.app.hdmi2', function () {
+    assert.ok(tv.blocked['amazon.alexa.view']);
+    assert.deepEqual(voice.switches, [], 'the voice assistant is left alone');
+    // Still offered while blocked, though sam no longer finds the app.
+    rk.getRemoteKeys(function (r) {
+      assert.strictEqual(r.keys.filter(function (k) { return k.key === 'alexa'; })[0].action, 'open');
+      set('ai', 'open', 'youtube.leanback.v4', function () {
+        setTimeout(function () {
+          launched = [];
+          toasts = [];
+          logLine(ALEXA_LINE + AI_LINE + NETFLIX_LINE);
+          setTimeout(function () {
+            assert.deepEqual(launched, ['com.webos.app.hdmi2', 'youtube.leanback.v4']);
+            // Toasts off for Amazon's "loading" one, for the Alexa press only, and back on.
+            setTimeout(function () {
+              assert.deepEqual(toasts, ['disable', 'enable']);
+              assert.ok(!exists(path.join(stateDir, 'remotekeys-toasts-off')));
+              // A block already in place counts as done, and is not reported as a change.
+              var calls = tv.blockCalls;
+              rk.recheckNative(function (ok, wrote) {
+                assert.ok(ok);
+                assert.strictEqual(wrote, false);
+                assert.strictEqual(tv.blockCalls, calls + 1);
+                set('alexa', 'lg', '', function () {
+                  assert.ok(!tv.blocked['amazon.alexa.view']);
+                  assert.ok(rk.isFollowingLog(), 'the AI button keeps it');
+                  set('ai', 'lg', '', function () {
+                    assert.ok(!rk.isFollowingLog());
+                    assert.ok(!exists(LG_FILE));
+                    next();
+                  });
+                });
+              });
+            }, 300);
+          }, POLLED);
+        }, 600);
+      });
+    });
+  });
+});
+
+step('toasts left off by a restart are switched back on at the start', function (next) {
+  fs.writeFileSync(path.join(stateDir, 'remotekeys-toasts-off'), '');
+  toasts = [];
+  rk.init(initOpts);
+  setTimeout(function () {
+    assert.deepEqual(toasts, ['enable']);
+    assert.ok(!exists(path.join(stateDir, 'remotekeys-toasts-off')));
+    next();
+  }, 20);
 });
 
 step('the AI button is not offered without the voice assistant\'s service', function (next) {
@@ -416,12 +480,15 @@ step('restore puts back every key LG had, and deletes Glasshouse\'s files', func
      set('multikeyhold', 'open', 'netflix', function () {
       voice.switches = [];
       set('ai', 'open', 'netflix', function () {
+      set('alexa', 'nothing', '', function () {
+      assert.ok(tv.blocked['amazon.alexa.view']);
       assert.ok(exists(MAP) && exists(LG_FILE));
       rk.restore(function (ok) {
         assert.ok(ok);
         assert.deepEqual(voice.switches, [true, false]);
         assert.strictEqual(voice.off, false);
-        assert.strictEqual(liveFollowers().length, 0);
+        assert.ok(!tv.blocked['amazon.alexa.view']);
+        assert.ok(!rk.isFollowingLog());
         assert.deepEqual(tv.mapping, MAPPING);
         assert.deepEqual(tv.custom, { customShortPress: SHORT, customLongPress: LONG });
         assert.strictEqual(liveSubs().length, 0);
@@ -430,6 +497,7 @@ step('restore puts back every key LG had, and deletes Glasshouse\'s files', func
         assert.ok(!exists(MAP) && !exists(LG_FILE));
         assert.strictEqual(tv.configs['glasshouse.remoteKeys'], undefined);
         next();
+      });
       });
       });
      });
@@ -462,6 +530,7 @@ step('a TV without native filters is not offered keys this way', function (next)
 
 function done() {
   try { fs.readdirSync(stateDir).forEach(function (f) { fs.unlinkSync(path.join(stateDir, f)); }); } catch (e) {}
+  try { fs.unlinkSync(LOG); } catch (e) {}
   try { fs.rmdirSync(stateDir); fs.rmdirSync(dir); } catch (e) {}
   console.log('test-remotekeys-webos11.js passed');
 }

@@ -657,8 +657,8 @@ button pressed to switch the TV on opens LG's app.
 `tvwebctl restore-keys` writes LG's values back and deletes both files. The
 other keys Glasshouse offers elsewhere (Input, the color keys, Search, Info) are
 not offered: their handling on webOS 11 ignores these values, as does that of
-Home, the Alexa button and **123**. Home Hub, the AI button and the ? button
-are offered only there, and left out of the JavaScript filter, whose file is
+Home and **123**. Home Hub, the AI button and the ? button are offered only
+there, and left out of the JavaScript filter, whose file is
 unchanged.
 
 The AI button reads no value either: `lginput2` hands it straight to LG's
@@ -668,13 +668,31 @@ nothing else can read its presses there. It logs every press, though, as
 while the button is set, Remote keys switches `voiceconductor` off through
 `lib/services.js`, as a hidden entry that the list of background services
 leaves out and its toggle refuses: the unit is stopped and masked, the boot
-hook stops it at each start, and it is stopped again if found running. A
-`tail -F` on the system log then answers each press by launching what was
-chosen, once within half a second; **Nothing** launches nothing. With the
-service running its voice screen, and its terms while they are not accepted,
-opened over the app; with it off, the app opened 0.6 to 1 s after the press and
-nothing of LG's did. `remotekeys-lg.json` records that Glasshouse switched the
-service off, so **As LG has it** and `tvwebctl restore-keys` switch it back on.
+hook stops it at each start, and it is stopped again if found running. The
+server then follows the system log itself, polling its size every 200 ms and
+reading only what was added (from the start where it is smaller or another
+file), rather than through a `tail` child, which the watchdog's restart would
+leave running. Each press opens what was chosen, once within half a second;
+**Nothing** opens nothing. With the service running its voice screen, and its
+terms while they are not accepted, opened over the app; with it off, the app
+opened within a second of the press and nothing of LG's did.
+`remotekeys-lg.json` records that Glasshouse switched the service off, so
+**As LG has it** and `tvwebctl restore-keys` switch it back on.
+
+The Alexa button goes from LG's filters to Amazon's adapter,
+`amazon.alexa.adapter.plugin`, whether or not `voiceconductor` runs. The hub
+starts the adapter on demand, so there is no unit to switch off; it shows
+"Amazon Alexa is loading" a second after the press and opens
+`amazon.alexa.view`, then Amazon's terms. While the button is set, the view is
+blocked with `applicationManager/blockSystemApp` (`forceBlockSystemApp: false`,
+as webOS 11 requires; a second block is answered "already blocked") and
+released for **As LG has it**, and the press is answered from the log as the
+AI button's is. The adapter's toast is not shortened by `closeToast`, so for
+4 s from the press toasts are switched off with `notification/disable`, which
+makes the service refuse new ones rather than queue them, and back on with
+`enable`; any other toast in that time is refused too. `remotekeys-toasts-off`
+in `/var/lib/tvweb` marks toasts off, and the server's start switches them back
+on from it.
 
 ## Older hardware capabilities (webOS 3.x and LCD models)
 
