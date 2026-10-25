@@ -1105,7 +1105,7 @@ function setupHomeAssistant() {
     remotebuttons.want('mqtt', true);
   }
 
-  MQTT_STATUS.broker = CONFIG.mqtt.host + ':' + mqttClient.opts.port;
+  MQTT_STATUS.broker = hostPort(CONFIG.mqtt.host, mqttClient.opts.port);
   MQTT_STATUS.tls = useTls;
   mqttStatus('connecting', '');
 
@@ -1450,7 +1450,7 @@ function setupHomeAssistant() {
   mqttClient.on('connect', function() {
     mqttStatus('connected', '');
     flushMqttErrorRepeats();
-    console.log('mqtt: connected to ' + CONFIG.mqtt.host + ':' + mqttClient.opts.port +
+    console.log('mqtt: connected to ' + hostPort(CONFIG.mqtt.host, mqttClient.opts.port) +
                 (useTls ? ' (tls)' : ' (plaintext)'));
     mqttClient.publish(mqttTopics.status, statusPayload(), true);
     // Republish the in-memory state because broker retention is not assumed.
