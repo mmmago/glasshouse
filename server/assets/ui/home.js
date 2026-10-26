@@ -209,7 +209,7 @@ function renderHomeRows() {
       const it = homeItem(kind, id);
       if (!it) return '';
       const hidden = kind !== 'ch' && homeLayout.hidden[kind].includes(id);
-      // Hidden or not, an input with nothing plugged in is left out by the row's tick box.
+      // Hidden or not, an input with nothing plugged in is left out by the row's switch.
       const leftOut = kind === 'dev' && it.unused && homeLayout.hideUnused === true;
       const icon = it.icon ? `<img class="rk-ico" src="${esc(api(it.icon))}" alt="">` : '';
       return `<div class="prot-row home-tile${hidden || leftOut ? ' home-hidden' : ''}">
@@ -241,9 +241,12 @@ function renderHomeRows() {
 // The Inputs row's one choice of what it shows.
 function homeUnusedRow(usable) {
   const on = homeLayout.hideUnused === true;
+  // An On and Off pill, as the tab's other switches are.
   return `<div class="prot-row">
-    <div class="prot-main"><label class="cfg-ent-chk${usable ? '' : ' dis'}"><input type="checkbox" id="home-hide-unused" ${on ? 'checked' : ''} ${usable ? '' : 'disabled'} onchange="homeHideUnused()"><span class="prot-title">${esc(t('home.hideUnused', 'Hide inputs with nothing connected'))}</span></label>
+    <div class="prot-main"><div class="prot-title">${esc(t('home.hideUnused', 'Hide inputs with nothing connected'))}</div>
       <div class="prot-desc">${esc(t('home.hideUnusedDesc', 'Leaves inputs with nothing plugged in out of the Inputs row, instead of showing them greyed out. They still show while arranging.'))}</div></div>
+    <div class="prot-status">${renderToggle({ id: 'home-hide-unused', cls: on ? 'good' : 'idle', label: on ? t('common.on', 'On') : t('common.off', 'Off'),
+      on, disabled: !usable, onclick: 'homeHideUnused()' })}</div>
   </div>`;
 }
 

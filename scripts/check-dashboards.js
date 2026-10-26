@@ -365,7 +365,7 @@ async function visitHomeFadeAndInputs(browser, base, problems) {
     await page.keyboard.up('Enter');
     await page.waitForTimeout(150);
     if (await page.locator('.tile.dev.unused').count() !== 1) problems.push('Home inputs: arranging did not show the input with nothing plugged in');
-    // Picked up, then Back: an input is hidden one by one, beside the tick box.
+    // Picked up, then Back: an input is hidden one by one, beside the switch.
     await page.keyboard.press('ArrowDown');
     await page.waitForTimeout(100);
     await page.keyboard.press('Enter');
@@ -390,7 +390,7 @@ async function visitHomeFadeAndInputs(browser, base, problems) {
   } finally { await page.close(); }
 }
 
-// The Home tab's Inputs row: a tick box for inputs with nothing plugged in,
+// The Home tab's Inputs row: a switch for inputs with nothing plugged in,
 // beside show or hide for each input.
 async function visitHomeInputsEditor(browser, base, problems) {
   const page = await browser.newPage();
@@ -417,13 +417,13 @@ async function visitHomeInputsEditor(browser, base, problems) {
     await page.goto(base + '/?tab=home');
     const row = page.locator('details.home-row[data-kind="dev"]');
     await row.locator('.home-tile').first().waitFor();
-    if (await row.locator('#home-hide-unused').count() !== 1) problems.push('Home inputs editor: the Inputs row has no tick box for inputs with nothing connected');
+    if (await row.locator('button#home-hide-unused.pill').count() !== 1) problems.push('Home inputs editor: the Inputs row has no On and Off switch for inputs with nothing connected');
     const toggles = await row.locator('.home-tile').getByText(/^(Shown|Hidden)$/).count();
-    if (toggles !== 2) problems.push('Home inputs editor: inputs did not each offer show or hide beside the tick box (' + toggles + ')');
-    await row.locator('#home-hide-unused').check();
+    if (toggles !== 2) problems.push('Home inputs editor: inputs did not each offer show or hide beside the switch (' + toggles + ')');
+    await row.locator('#home-hide-unused').click();
     const until = Date.now() + 5000;
     while (Date.now() < until && !/Left out/.test(await row.textContent())) await page.waitForTimeout(100);
-    if (!saves.some(p => p.hideUnused === true)) problems.push('Home inputs editor: the tick box did not save hideUnused');
+    if (!saves.some(p => p.hideUnused === true)) problems.push('Home inputs editor: the switch did not save hideUnused');
     const out = await row.locator('.home-tile').filter({ hasText: 'HDMI 2' }).getByText('Left out').count();
     if (out !== 1) problems.push('Home inputs editor: the input with nothing connected was not marked Left out');
   } finally { await page.close(); }
