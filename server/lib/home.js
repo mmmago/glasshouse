@@ -240,9 +240,6 @@ function normalise(raw) {
       d.hidden[r] = stringList(raw.hidden[r]).filter(function (id) { return !(r === 'app' && id === LG_HOME_TILE); });
     }
   });
-  // Inputs are not hidden one by one: hideUnused leaves out those with nothing
-  // plugged in. Inputs hidden by an earlier build show again.
-  d.hidden.dev = [];
   /*
    * Channels are added and removed rather than hidden, and their list is
    * their order. A file from before that keeps a hidden channel off the row

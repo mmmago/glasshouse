@@ -135,7 +135,6 @@ body{font-family:'Manrope',sans-serif;color:#ece7df;-webkit-font-smoothing:antia
 .arranging #banner{display:-webkit-flex;display:flex}
 #banner b{color:#ece7df;font-weight:600;margin-right:8px}
 #banner .keys{-webkit-flex:1 1 auto;flex:1 1 auto;margin-left:34px}
-#banner .btn.off{opacity:.35}
 #banner .btn{margin-left:12px;padding:8px 18px;border-radius:5px;color:#ece7df;background:#231d12;outline:2px solid transparent}
 #banner .btn.focus{outline-color:#e9ad55}
 
@@ -340,8 +339,7 @@ html.faded #stage{opacity:0}
     for (var i = 0; i < (list || []).length; i++) if (list[i].id === id) return list[i];
     return null;
   }
-  // Inputs are never hidden one by one; see leftOut.
-  function hidden(kind, id) { return kind !== 'dev' && layout.hidden[kind].indexOf(id) !== -1; }
+  function hidden(kind, id) { return layout.hidden[kind].indexOf(id) !== -1; }
   // The server puts a Last opened row in that order; the view shows it as sent.
   function byRecent(kind) { return !!(layout.sort && layout.sort[kind] === 'recent'); }
 
@@ -354,8 +352,8 @@ html.faded #stage{opacity:0}
     });
     return out;
   }
-  // An input with nothing plugged in, where the layout leaves those out. While
-  // arranging it shows, greyed out, so that it can still be moved.
+  // An input with nothing plugged in, where the layout leaves those out, as well
+  // as any hidden. While arranging it shows, greyed out, so that it can still be moved.
   function leftOut(kind, it) { return kind === 'dev' && it.unused && layout.hideUnused === true && !state.arranging; }
   function rowKey() { return layout.rows[state.row]; }
   // A row with nothing to show is left out of the view, but not while arranging.
@@ -462,8 +460,6 @@ html.faded #stage{opacity:0}
     // Apps and inputs come from the TV and can only be hidden; channels were added, so they are removed.
     $('btnHide').textContent = state.last && state.last.kind === 'ch'
       ? t('home.arrange.removeChannel', 'Remove channel') : t('home.arrange.hide', 'Hide or show');
-    // An input is not hidden on its own, so the button does nothing for it.
-    if (state.last && state.last.kind === 'dev') $('btnHide').className += ' off';
     if (state.arranging) {
       var it = items(rowKey())[colOf(rowKey())];
       $('bannerState').textContent = colOf(rowKey()) === -1
@@ -932,7 +928,7 @@ html.faded #stage{opacity:0}
     // The LG Home tile is the way back to LG's Home, so it always shows.
     if (!last || (last.kind === 'app' && last.id === LG_HOME_TILE)) return;
     var kind = last.kind, it = byId(kind, last.id);
-    if (!it || kind === 'dev') return;
+    if (!it) return;
     if (kind === 'ch') {
       layout.channels = layout.channels.filter(function (id) { return id !== it.id; });
       data.order.ch = data.order.ch.filter(function (id) { return id !== it.id; });

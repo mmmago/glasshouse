@@ -208,8 +208,8 @@ function renderHomeRows() {
     const tiles = order.map((id, i) => {
       const it = homeItem(kind, id);
       if (!it) return '';
-      // Inputs are not hidden one by one: the row's tick box leaves out those with nothing connected.
-      const hidden = kind === 'app' && homeLayout.hidden[kind].includes(id);
+      const hidden = kind !== 'ch' && homeLayout.hidden[kind].includes(id);
+      // Hidden or not, an input with nothing plugged in is left out by the row's tick box.
       const leftOut = kind === 'dev' && it.unused && homeLayout.hideUnused === true;
       const icon = it.icon ? `<img class="rk-ico" src="${esc(api(it.icon))}" alt="">` : '';
       return `<div class="prot-row home-tile${hidden || leftOut ? ' home-hidden' : ''}">
@@ -220,7 +220,7 @@ function renderHomeRows() {
           <button type="button" class="pill idle home-move" ${movable && i < order.length - 1 ? '' : 'disabled'} onclick="homeMoveTile('${kind}', ${i}, 1)" aria-label="${esc(t('home.later', 'Later'))}">↓</button>
           ${it.lg ? `<span class="pill idle">${esc(t('home.alwaysShown', 'Always shown'))}</span>` :
             kind === 'ch' ? `<button type="button" class="pill idle" ${usable ? '' : 'disabled'} onclick="homeToggleChannel('${jsq(id)}')">${esc(t('home.ch.remove', 'Remove'))}</button>` :
-            kind === 'dev' ? (leftOut ? `<span class="pill idle">${esc(t('home.leftOut', 'Left out'))}</span>` : '') :
+            (leftOut ? `<span class="pill idle">${esc(t('home.leftOut', 'Left out'))}</span>` : '') +
             renderToggle({ cls: hidden ? 'idle' : 'good', label: hidden ? t('home.hidden', 'Hidden') : t('home.shown', 'Shown'),
               disabled: !usable, onclick: `homeToggleTile('${kind}', '${jsq(id)}')` })}
         </div></div>`;

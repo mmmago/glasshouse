@@ -287,6 +287,14 @@ async function visitHomeFadeAndInputs(browser, base, problems) {
     version++;
     await returned();
     if (await devTiles() !== 2) problems.push('Home inputs: an input with nothing plugged in was left out with hideUnused off');
+    // Hidden one by one, an input with something plugged in is left out too.
+    layout.hidden.dev = ['hdmi1'];
+    version++;
+    await returned();
+    if (await devTiles() !== 1 || await page.locator('.tile.dev.unused').count() !== 1) problems.push('Home inputs: a hidden input showed, or the unplugged one went with it');
+    layout.hidden.dev = [];
+    version++;
+    await returned();
     if (await faded()) problems.push('Home fade: the view was dark without fading chosen');
 
     layout.fade = true;
@@ -357,19 +365,16 @@ async function visitHomeFadeAndInputs(browser, base, problems) {
     await page.keyboard.up('Enter');
     await page.waitForTimeout(150);
     if (await page.locator('.tile.dev.unused').count() !== 1) problems.push('Home inputs: arranging did not show the input with nothing plugged in');
+    // Picked up, then Back: an input is hidden one by one, beside the tick box.
     await page.keyboard.press('ArrowDown');
-    await page.keyboard.press('ArrowRight');
     await page.waitForTimeout(100);
-    const btnHide = await page.evaluate(() => document.getElementById('btnHide').className);
-    if (!/\boff\b/.test(btnHide)) problems.push('Home inputs: Hide or show was offered for an input');
-    // Picked up, then Back: an input is not hidden.
     await page.keyboard.press('Enter');
     await page.waitForTimeout(100);
     await page.evaluate(() => {
       for (const type of ['keydown', 'keyup']) document.dispatchEvent(new KeyboardEvent(type, { keyCode: 461, bubbles: true }));
     });
     await page.waitForTimeout(150);
-    if (await page.locator('.tile.dev.hidden').count()) problems.push('Home inputs: Back hid an input on its own');
+    if (await page.locator('.tile.dev.hidden').count() !== 1) problems.push('Home inputs: Back did not hide an input while arranging');
 
     // From cold with fading chosen: dark before the catalogue, in once it comes.
     let release;
@@ -385,8 +390,8 @@ async function visitHomeFadeAndInputs(browser, base, problems) {
   } finally { await page.close(); }
 }
 
-// The Home tab's Inputs row: one tick box for inputs with nothing plugged in,
-// no show or hide for each input.
+// The Home tab's Inputs row: a tick box for inputs with nothing plugged in,
+// beside show or hide for each input.
 async function visitHomeInputsEditor(browser, base, problems) {
   const page = await browser.newPage();
   page.on('pageerror', e => problems.push('Home inputs editor: ' + e.message));
@@ -414,7 +419,7 @@ async function visitHomeInputsEditor(browser, base, problems) {
     await row.locator('.home-tile').first().waitFor();
     if (await row.locator('#home-hide-unused').count() !== 1) problems.push('Home inputs editor: the Inputs row has no tick box for inputs with nothing connected');
     const toggles = await row.locator('.home-tile').getByText(/^(Shown|Hidden)$/).count();
-    if (toggles) problems.push('Home inputs editor: inputs still offer show or hide one by one');
+    if (toggles !== 2) problems.push('Home inputs editor: inputs did not each offer show or hide beside the tick box (' + toggles + ')');
     await row.locator('#home-hide-unused').check();
     const until = Date.now() + 5000;
     while (Date.now() < until && !/Left out/.test(await row.textContent())) await page.waitForTimeout(100);

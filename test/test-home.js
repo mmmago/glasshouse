@@ -1115,7 +1115,7 @@ step('the picture details stay off until switched on, and the server is told of 
   });
 });
 
-step('fading and leaving out inputs with nothing plugged in stay off until switched on, are saved, and outlast a reset; inputs are not hidden one by one', function (done) {
+step('fading and leaving out inputs with nothing plugged in stay off until switched on, are saved, and outlast a reset, beside hiding inputs one by one', function (done) {
   start(null);
   assert.strictEqual(home.layout().fade, false);
   assert.strictEqual(home.layout().hideUnused, false);
@@ -1129,11 +1129,11 @@ step('fading and leaving out inputs with nothing plugged in stay off until switc
     // Only true switches them on.
     assert.strictEqual(home.normalise({ fade: 'yes', hideUnused: 1 }).fade, false);
     assert.strictEqual(home.normalise({ fade: 'yes', hideUnused: 1 }).hideUnused, false);
-    // Inputs are not hidden one by one: an earlier build's list is dropped, and a new one is not kept.
-    assert.deepEqual(home.normalise({ hidden: { dev: ['hdmi1'], app: ['netflix'] } }).hidden.dev, []);
-    assert.deepEqual(home.normalise({ hidden: { dev: ['hdmi1'], app: ['netflix'] } }).hidden.app, ['netflix']);
+    // Inputs are still hidden one by one beside it: an earlier version's list stays, and a new one is kept.
+    assert.deepEqual(home.normalise({ hidden: { dev: ['hdmi1'], app: ['netflix'] } }).hidden.dev, ['hdmi1']);
     home.setLayout({ hidden: { dev: ['hdmi2'] } }, function (rh) {
-      assert.deepEqual(rh.layout.hidden.dev, []);
+      assert.deepEqual(rh.layout.hidden.dev, ['hdmi2']);
+      assert.strictEqual(rh.layout.hideUnused, true, 'hiding an input leaves the tick box as it is');
     home.setLayout({ reset: true }, function (r2) {
       assert.strictEqual(r2.layout.fade, true, 'a reset is of rows and tiles');
       assert.strictEqual(r2.layout.hideUnused, true);

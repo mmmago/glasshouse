@@ -946,7 +946,7 @@ function homeRows(d) {
       r.push(head(names[kind]));
       r.push(sortRow(kind));
       if (kind === 'dev') {
-        // Inputs are not hidden one by one: this leaves out those with nothing connected.
+        // Beside hiding each input, this leaves out those with nothing connected.
         var hideUnusedOn = lay.hideUnused === true;
         r.push({ label: t('home.hideUnused', 'Hide inputs with nothing connected'),
                  value: hideUnusedOn ? t('common.on', 'On') : t('common.off', 'Off'), cls: hideUnusedOn ? 'on' : 'off',
@@ -957,8 +957,10 @@ function homeRows(d) {
           var title = homeItemTitle('dev', id), dev = null, i;
           if (title === null) return;
           for (i = 0; i < c.devices.length; i++) if (c.devices[i].id === id) dev = c.devices[i];
-          var out = !!(dev && dev.unused && hideUnusedOn);
-          r.push({ label: title, value: out ? t('home.leftOut', 'Left out') : t('home.shown', 'Shown'), cls: out ? 'off' : 'on',
+          var out = !!(dev && dev.unused && hideUnusedOn), hid = lay.hidden.dev.indexOf(id) !== -1;
+          r.push({ label: title, value: hid ? t('home.hidden', 'Hidden') : out ? t('home.leftOut', 'Left out') : t('home.shown', 'Shown'),
+                   cls: hid || out ? 'off' : 'on', act: can ? 'homeTile' : null, key: id, kind: 'dev', on: !hid,
+                   press: hid ? t('tv.home.tile.show', 'Press OK to show it') : t('tv.home.tile.hide', 'Press OK to hide it'),
                    hint: t('tv.home.tile.hint', 'Hold OK on Glasshouse Home to change the order of tiles.') });
         });
         return;

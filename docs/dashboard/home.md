@@ -21,7 +21,7 @@ Glasshouse Home displays a clock and date, the last active source or app, and up
 
     ---
 
-    Every HDMI port, plus separate tiles for connected HDMI-CEC devices (for example, *"HDMI 2, through STEREO 70s"*). Selecting a CEC tile wakes the device and switches receivers to that source; inactive ports appear dimmed. With **Hide inputs with nothing connected**, a tick box in the Inputs row's settings on the dashboard and in the TV app, ports with nothing plugged in are left out instead, marked **Left out** on the dashboard; they show, dimmed, while arranging, and come back as soon as something is plugged in. Inputs are not hidden one by one.
+    Every HDMI port, plus separate tiles for connected HDMI-CEC devices (for example, *"HDMI 2, through STEREO 70s"*). Selecting a CEC tile wakes the device and switches receivers to that source; inactive ports appear dimmed. Inputs can be hidden one by one, like apps. Beside that, **Hide inputs with nothing connected**, a tick box in the Inputs row's settings on the dashboard and in the TV app, leaves out ports with nothing plugged in instead of dimming them, marked **Left out**; they show, dimmed, while arranging, and come back as soon as something is plugged in. An input is left out if it is hidden or, with the tick box on, has nothing connected.
 
 -   **Channels**
 
@@ -99,9 +99,9 @@ Click **Use Glasshouse Home** (and confirm on the second press) in the web dashb
 
 Rows and tiles can be arranged from the **web dashboard**, the **TV app**, or **directly on Glasshouse Home**:
 
-* **On the TV screen:** Hold **OK** on any tile to enter arrange mode. Use the D-pad (**Left/Right** to move a tile, **Up/Down** to reorder rows), **Back** to hide/show an app or remove a channel, and the bottom bar for **Reset** and **Done**.
+* **On the TV screen:** Hold **OK** on any tile to enter arrange mode. Use the D-pad (**Left/Right** to move a tile, **Up/Down** to reorder rows), **Back** to hide/show a tile or remove a channel, and the bottom bar for **Reset** and **Done**.
 * **Row ordering (`Your order` vs `Last opened`):** Each row can be set to stay in a fixed custom order (**Your order**) or automatically move the most recently used app, input, or channel to the front (**Last opened**, keeping **LG Home** pinned at the end).
-* **Adding and removing channels:** Apps are discovered automatically from the TV and toggled between shown and hidden, and inputs are left out only when nothing is plugged in; live TV channels are added by name or number under **Add channels** and removed when no longer needed.
+* **Adding and removing channels:** Apps and inputs are discovered automatically from the TV and toggled between shown and hidden (inputs with nothing plugged in can also be left out with the Inputs row's tick box); live TV channels are added by name or number under **Add channels** and removed when no longer needed.
 
 === "Arranging on the TV (hold OK)"
 
