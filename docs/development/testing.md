@@ -138,6 +138,15 @@ pip install homeassistant
 ./scripts/check-ha-discovery.py
 ```
 
+The documentation check needs MkDocs, Material for MkDocs, and `markdown-callouts`:
+
+```bash
+pip install 'mkdocs>=1.6,<2' 'mkdocs-material>=9.7,<10' 'markdown-callouts>=0.4,<0.5'
+NO_MKDOCS_2_WARNING=1 mkdocs build
+```
+
+Use `NO_MKDOCS_2_WARNING=1 mkdocs serve` to preview the site locally at `http://127.0.0.1:8000/glasshouse/` with live reloading.
+
 ## Local TV emulation
 
 `scripts/emulate-tv.js` runs the server inside a simulated TV environment with procfs, sysfs, Luna calls, installed apps, remote key filters, and recent apps mocked. It serves the web dashboard, the TV app dashboard, and Glasshouse Home locally for development and visual testing without physical TV hardware:
